@@ -1,0 +1,25 @@
+# ── NEVER COMMIT ──
+.env
+.env.*
+credentials
+credentials.*
+*.token
+*.key
+*.pem
+!*.pub
+
+# ── LARGE / DERIVED ──
+ffmpeg-src/
+node_modules/
+scratch/
+*.tar.xz
+*.mp4
+*.mkv
+*.mov
+
+# ── LOCAL STATE ──
+*.bak
+*.bak-*
+*.log
+*.sqlite
+*.sqlite-*
