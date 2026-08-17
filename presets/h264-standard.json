@@ -1,0 +1,41 @@
+{
+  "name": "H.264 Standard Ladder",
+  "codec": "h264",
+  "encoder": "libx264",
+  "preset": "slow",
+  "pix_fmt": "yuv420p",
+  "movflags": "+faststart",
+  "frame_rate": "preserve",
+  "single_decode": true,
+  "measured": {
+    "date": "2026-08-17",
+    "ffmpeg": "n9.0.1-4-gb3ef323dd2-20260817",
+    "host": "Vultr CPU-Optimized 16 vCPU EPYC Genoa, Dallas",
+    "sources": [
+      { "show": "FCRSA2026", "file": "DOGS NONREGULAR", "lighting": "excellent (Purina)",
+        "src_mbps": 10.39, "rungs_mbps": {"720":2.93,"540":1.90,"480":1.43,"360":0.94},
+        "speed_x": 2.37 },
+      { "show": "BTCA2026", "file": "NATIONAL BOB BITCHES @30%", "lighting": "poor, variable, noisy",
+        "src_mbps": 10.59, "rungs_mbps": {"720":3.43,"540":2.25,"480":1.68,"360":1.12},
+        "speed_x": 2.16 },
+      { "show": "BTCA2026", "file": "NATIONAL BOB BITCHES @65%", "lighting": "poor, variable, noisy",
+        "src_mbps": 10.52, "rungs_mbps": {"720":3.16,"540":2.06,"480":1.53,"360":1.02},
+        "speed_x": 2.33 }
+    ],
+    "finding": "Spread across best and worst lighting under 20%. Caps never engaged. One CRF setting covers the full range; no per-show tuning required. Predicted 4-6 Mbps on noisy source; measured 3.16-3.43. Prediction FAILED — master's own 10 Mbps VBR pass plus the downscale remove most grain before x264 sees it."
+  },
+  "rungs": [
+    { "height": 1080, "crf": 22, "maxrate": "9M",    "bufsize": "18M", "audio_kbps": 160 },
+    { "height": 720,  "crf": 22, "maxrate": "5500k", "bufsize": "11M", "audio_kbps": 160 },
+    { "height": 540,  "crf": 22, "maxrate": "3500k", "bufsize": "7M",  "audio_kbps": 128 },
+    { "height": 480,  "crf": 23, "maxrate": "2500k", "bufsize": "5M",  "audio_kbps": 128 },
+    { "height": 360,  "crf": 23, "maxrate": "1500k", "bufsize": "3M",  "audio_kbps": 96  },
+    { "height": 240,  "crf": 24, "maxrate": "900k",  "bufsize": "1800k","audio_kbps": 96 }
+  ],
+  "rules": {
+    "never_upscale": "Skip any rung at or above source height. Report SKIPPED (blue), not FAILED (red).",
+    "master_is_top_rung": "The master is linked in place, never re-encoded, whatever its resolution.",
+    "aspect": "Scale by height with -2 width. Preserve source aspect. No padding.",
+    "rejected": "2-pass VBR — 61% slower than CRF and produced a LARGER file at equal quality. Measured, not assumed."
+  }
+}
