@@ -33,8 +33,8 @@
     { "height": 240,  "crf": 24, "maxrate": "900k",  "bufsize": "1800k","audio_kbps": 96 }
   ],
   "rules": {
-    "never_upscale": "Skip any rung at or above source height. Report SKIPPED (blue), not FAILED (red).",
-    "master_is_top_rung": "The master is linked in place, never re-encoded, whatever its resolution.",
+    "never_upscale": "Skip any rung STRICTLY ABOVE source height. Report SKIPPED (blue), not FAILED (red).",
+    "master_is_top_rung": "Skip a rung AT source height ONLY when the requested codec equals the master's codec. The master is linked in place, never re-encoded. Consequence: a 1080p H.264 master yields FIVE H.264 rungs but SIX HEVC rungs, because no HEVC master exists.",
     "aspect": "Scale by height with -2 width. Preserve source aspect. No padding.",
     "rejected": "2-pass VBR — 61% slower than CRF and produced a LARGER file at equal quality. Measured, not assumed."
   }

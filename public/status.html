@@ -1,0 +1,121 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SDVP Encoder</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+<style>
+:root{--teal:#0d6d70;--teal2:#0a4f52;--gold:#c9a227;--ink:#15302f;--bg:#f4f7f6;--line:#d8e2e0;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Oswald,system-ui,sans-serif;font-size:18px;line-height:1.5}
+header{background:var(--teal);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+header h1{font-family:'Playfair Display',Georgia,serif;font-size:29px;margin:0;font-weight:600}
+.sp{flex:1}
+.ctl{display:flex;align-items:center;gap:8px;font-size:19px}
+select{font-family:inherit;font-size:18px;padding:6px 10px;border-radius:5px;border:0}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--gold);display:inline-block}
+main{padding:22px;max-width:1400px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:9px;padding:20px 22px;margin-bottom:18px}
+.card h2{font-size:22px;margin:0 0 4px;font-weight:600}
+.meta{font-size:17px;color:#3f5b59;margin-bottom:12px}
+.bar{height:26px;background:#e6eeec;border-radius:13px;overflow:hidden;margin:12px 0 6px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .4s}
+.stats{font-size:18px;color:#2c4a48;display:flex;gap:24px;flex-wrap:wrap}
+.chips{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-size:17px;padding:6px 14px;border-radius:16px;border:1px solid transparent}
+.c-STORED{background:#e3f3e6;color:#1d6b33;border-color:#b6dcc0}
+.c-VERIFIED{background:#e3f3e6;color:#1d6b33;border-color:#b6dcc0}
+.c-ENCODED{background:#fdf3d6;color:#8a6d10;border-color:#eddba1}
+.c-PLANNED{background:#fdf3d6;color:#8a6d10;border-color:#eddba1}
+.c-SKIPPED{background:#e5eef7;color:#2c5a86;border-color:#bcd4e8}
+.c-EXISTS{background:#e5eef7;color:#2c5a86;border-color:#bcd4e8}
+.c-FAILED{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
+.phase{font-size:17px;font-weight:600;letter-spacing:.08em;padding:6px 14px;border-radius:5px;background:#e2e8e7;color:#46605e;display:inline-block;vertical-align:middle}
+.phase.QUEUED{background:#e2e8e7;color:#46605e}
+.phase.FETCHING{background:#f7e6b0;color:#6b5310}
+.phase.PROBING{background:#f2d98a;color:#6b5310}
+.phase.PLANNING{background:#ecc95f;color:#5c4708}
+.phase.ENCODING{background:#c9a227;color:#2b2101}
+.phase.VERIFYING{background:#a8ad3a;color:#22260a}
+.phase.UPLOADING{background:#6da84f;color:#ffffff}
+.phase.CLEANING{background:#3d8a44;color:#ffffff}
+.phase.DONE{background:#1d6b33;color:#ffffff}
+.phase.FAILED{background:#96231f;color:#ffffff}
+@keyframes sdvppulse{0%{opacity:1}50%{opacity:.55}100%{opacity:1}}
+.phase.FETCHING,.phase.PROBING,.phase.PLANNING,.phase.ENCODING,.phase.VERIFYING,.phase.UPLOADING,.phase.CLEANING{animation:sdvppulse 1.6s ease-in-out infinite}
+.err{margin-top:12px;font-size:18px;background:#fbe4e4;color:#8a1f1b;padding:11px 14px;border-radius:6px}
+.empty{text-align:center;color:#5d7472;padding:70px 0;font-size:21px}
+.reason{font-size:16px;color:#4d6462;margin-top:9px}
+table.r{width:100%;border-collapse:collapse;margin-top:14px;font-size:17px}
+table.r td,table.r th{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left}
+table.r th{color:#2c4a48;font-weight:400;font-size:16px}
+</style></head><body>
+<header>
+  <h1>SDVP Encoder</h1>
+  <span class="sp"></span>
+  <span class="ctl"><span class="dot" id="dot"></span><span id="stamp">—</span></span>
+  <span class="ctl">refresh
+    <select id="iv">
+      <option value="1000">1s</option>
+      <option value="2000" selected>2s</option>
+      <option value="5000">5s</option>
+      <option value="30000">30s</option>
+      <option value="0">paused</option>
+    </select></span>
+</header>
+<main id="main"><div class="empty">connecting…</div></main>
+<script>
+var timer=null;
+function fmt(s){if(s==null)return'—';if(s<90)return s.toFixed(0)+'s';return (s/60).toFixed(1)+' min';}
+function mb(b){if(b==null)return'—';return b>=1e9?(b/1e9).toFixed(2)+' GB':(b/1e6).toFixed(1)+' MB';}
+function esc(t){return String(t==null?'':t).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function rungRow(o){
+  var h='<table class="r"><tr><th>rung</th><th>codec</th><th>state</th><th>size</th><th>Mbps</th><th>upload</th><th>note</th></tr>';
+  o.rungs.forEach(function(r){
+    h+='<tr><td>'+r.height+'p</td><td>'+esc(o.codec)+'</td><td><span class="chip c-'+esc(r.state)+'">'+esc(r.state)+'</span></td>'
+      +'<td>'+mb(r.bytes)+'</td><td>'+(r.verify&&r.verify.mbps!=null?r.verify.mbps.toFixed(2):'—')+'</td>'
+      +'<td>'+(r.upload_mbps!=null?r.upload_mbps.toFixed(0)+' Mbps':'—')
+      +(r.checksum_match===true?' ✓':(r.checksum_match===false?' ✗':''))+'</td>'
+      +'<td>'+esc(r.reason||'')+'</td></tr>';
+  });
+  return h+'</table>';
+}
+function card(it){
+  var p=it.progress||{};
+  var h='<div class="card"><h2>'+esc(it.name||'(fetching…)')+' <span class="phase '+esc(it.phase)+'">'+esc(it.phase)+'</span></h2>';
+  h+='<div class="meta">'+esc(it.batch)+' &middot; '+mb(it.bytes)+(it.probe?' &middot; '+it.probe.width+'&times;'+it.probe.height+' '+esc(it.probe.video_codec)+' &middot; '+(it.probe.duration_s/60).toFixed(1)+' min':'')+'</div>';
+  h+='<div class="bar"><i style="width:'+(p.pct||0).toFixed(1)+'%"></i></div>';
+  h+='<div class="stats"><span>'+(p.pct||0).toFixed(0)+' percent</span><span>speed '+(p.speed_x||0).toFixed(2)+'x</span><span>eta '+fmt(p.eta_s)+'</span>';
+  if(it.timings){var t=it.timings;h+='<span>fetch '+fmt(t.fetch_s)+'</span><span>encode '+fmt(t.encode_s)+'</span><span>upload '+fmt(t.upload_s)+'</span>';}
+  h+='</div>';
+  var chips='';
+  (it.outputs||[]).forEach(function(o){o.rungs.forEach(function(r){
+    chips+='<span class="chip c-'+esc(r.state)+'">'+r.height+'p '+esc(o.codec)+'</span>';});});
+  if(chips)h+='<div class="chips">'+chips+'</div>';
+  (it.outputs||[]).forEach(function(o){h+=rungRow(o);});
+  if(it.error)h+='<div class="err">'+esc(it.error)+'</div>';
+  if(it.scratch_retained)h+='<div class="reason">scratch retained for inspection</div>';
+  return h+'</div>';
+}
+function draw(s){
+  var m=document.getElementById('main');
+  document.getElementById('stamp').textContent=new Date(s.updated_at).toLocaleTimeString();
+  var runs=s.runs||[];
+  if(!runs.length){m.innerHTML='<div class="empty">no runs yet — drop a job file to begin</div>';return;}
+  var h='';
+  runs.forEach(function(r){
+    var rn=(r.run_number!=null?'Run #'+r.run_number+' \u00b7 ':'');var rt=r.started_at?new Date(r.started_at).toLocaleTimeString():'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+' \u00b7 '+rt+' \u00b7 '+esc(r.status)+'</div>';
+    (r.items||[]).forEach(function(it){h+=card(it);});
+  });
+  m.innerHTML=h;
+}
+function tick(){
+  fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();})
+   .then(draw).catch(function(){document.getElementById('stamp').textContent='no answer';});
+}
+function schedule(){
+  if(timer)clearInterval(timer);
+  var v=Number(document.getElementById('iv').value);
+  if(v>0)timer=setInterval(tick,v);
+}
+document.getElementById('iv').addEventListener('change',schedule);
+tick();schedule();
+</script></body></html>
