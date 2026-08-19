@@ -17,6 +17,25 @@ const save = (o) => st.save(state, o);
 save({ force: true });
 
 http.createServer((req, res) => {
+  // SHEETS. Serves only files whose name matches the sheet pattern, from one
+  // fixed directory, with no path separators permitted - a filename, never a
+  // path, so nothing outside that folder is reachable.
+  if (req.url.indexOf('/sheet/') === 0) {
+    const raw = decodeURIComponent(req.url.slice(7).split('?')[0]);
+    if (raw.indexOf('/') !== -1 || raw.indexOf('\\') !== -1 ||
+        raw.indexOf('..') !== -1 || !/^_sdvp_quality_.+\.jpg$/.test(raw)) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      return res.end('bad sheet name');
+    }
+    const f = '/var/lib/sdvp-encoder/sheets/' + raw;
+    if (!fs.existsSync(f)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      return res.end('no such sheet');
+    }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+    return res.end(fs.readFileSync(f));
+  }
+
   if (req.url === '/api/state') {
     let body;
     try { body = fs.readFileSync(st.STATE, 'utf8'); }

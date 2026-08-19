@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>SDVP Encoder</title>
+<html><head><meta charset="utf-8"><title>SDVP Encoder</title><link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzIiIGZpbGw9IiNGRkM2MUEiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMGE0ZjUyIiBzdHJva2Utd2lkdGg9IjciLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjEzIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjUxIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSIxMyIgY3k9IjMyIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSI1MSIgY3k9IjMyIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSI2LjUiIGZpbGw9IiMwYTRmNTIiLz48L3N2Zz4=">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
 <style>
@@ -47,6 +47,19 @@ main{padding:22px;max-width:1400px;margin:0 auto}
 table.r{width:100%;border-collapse:collapse;margin-top:14px;font-size:17px}
 table.r td,table.r th{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left}
 table.r th{color:#2c4a48;font-weight:400;font-size:16px}
+.qual{margin-top:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.qthumb{width:132px;height:auto;border:1px solid var(--line);border-radius:6px;cursor:pointer;display:block;background:#e6eeec}
+.qthumb:hover{border-color:var(--teal)}
+.qlab{font-size:15px;color:#4d6462;text-align:center;margin-top:3px}
+.qbtn{font-family:inherit;font-size:17px;padding:7px 15px;border-radius:16px;border:1px solid #b6dcc0;background:#e3f3e6;color:#1d6b33;cursor:pointer}
+.qbtn.bad{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
+.qbtn:hover{border-color:var(--teal)}
+#sdvpModal{position:fixed;inset:0;background:rgba(10,49,48,.82);display:none;align-items:center;justify-content:center;padding:26px;z-index:99}
+#sdvpModal.on{display:flex}
+#sdvpBox{background:#fff;border-radius:10px;padding:20px 22px;max-width:96vw;max-height:94vh;overflow:auto}
+#sdvpBox h3{font-family:'Playfair Display',Georgia,serif;font-size:24px;margin:0 0 12px;font-weight:600;color:var(--ink)}
+#sdvpBox img{max-width:92vw;max-height:78vh;display:block;border-radius:5px}
+#sdvpClose{float:right;font-family:inherit;font-size:17px;padding:6px 15px;border-radius:5px;border:1px solid var(--line);background:#f4f7f6;color:var(--ink);cursor:pointer;margin-left:16px}
 </style></head><body>
 <header>
   <h1>SDVP Encoder</h1>
@@ -62,6 +75,7 @@ table.r th{color:#2c4a48;font-weight:400;font-size:16px}
     </select></span>
 </header>
 <main id="main"><div class="empty">connecting…</div></main>
+<div id="sdvpModal"><div id="sdvpBox"><button id="sdvpClose">close</button><h3 id="sdvpTitle"></h3><div id="sdvpBody"></div></div></div>
 <script>
 var timer=null;
 function fmt(s){if(s==null)return'—';if(s<90)return s.toFixed(0)+'s';return (s/60).toFixed(1)+' min';}
@@ -82,15 +96,35 @@ function card(it){
   var p=it.progress||{};
   var h='<div class="card"><h2>'+esc(it.name||'(fetching…)')+' <span class="phase '+esc(it.phase)+'">'+esc(it.phase)+'</span></h2>';
   h+='<div class="meta">'+esc(it.batch)+' &middot; '+mb(it.bytes)+(it.probe?' &middot; '+it.probe.width+'&times;'+it.probe.height+' '+esc(it.probe.video_codec)+' &middot; '+(it.probe.duration_s/60).toFixed(1)+' min':'')+'</div>';
+  h+='<div style="font-size:16px;color:#3f5b59;margin-top:6px">'+esc(p.label||'')+'</div>';
   h+='<div class="bar"><i style="width:'+(p.pct||0).toFixed(1)+'%"></i></div>';
   h+='<div class="stats"><span>'+(p.pct||0).toFixed(0)+' percent</span><span>speed '+(p.speed_x||0).toFixed(2)+'x</span><span>eta '+fmt(p.eta_s)+'</span>';
-  if(it.timings){var t=it.timings;h+='<span>fetch '+fmt(t.fetch_s)+'</span><span>encode '+fmt(t.encode_s)+'</span><span>upload '+fmt(t.upload_s)+'</span>';}
+  if(it.timings){var t=it.timings;h+='<span>fetch '+fmt(t.fetch_s)+'</span><span>encode '+fmt(t.encode_s)+'</span><span>verify '+fmt(t.verify_s)+'</span><span>upload '+fmt(t.upload_s)+'</span>';}
   h+='</div>';
   var chips='';
   (it.outputs||[]).forEach(function(o){o.rungs.forEach(function(r){
     chips+='<span class="chip c-'+esc(r.state)+'">'+r.height+'p '+esc(o.codec)+'</span>';});});
   if(chips)h+='<div class="chips">'+chips+'</div>';
   (it.outputs||[]).forEach(function(o){h+=rungRow(o);});
+  var q=it.quality||null;
+  if(q&&((q.sheets&&q.sheets.length)||q.audio)){
+    var qh='';
+    (q.sheets||[]).forEach(function(sh){
+      if(!sh.served)return;
+      var u='/sheet/'+encodeURIComponent(sh.served);
+      qh+='<div><img class="qthumb" src="'+u+'" alt="'+esc(sh.codec)+' contact sheet"'
+        +' onclick="showSheet(this.src,\''+esc(it.name).replace(/'/g,'')+' \u00b7 '+esc(sh.codec)+'\')">'
+        +'<div class="qlab">'+esc(sh.codec)+' &middot; from '+sh.from_height+'p</div></div>';
+    });
+    if(q.audio){
+      var a=q.audio;
+      var rec=a.recorded||{};
+      var lv=(rec.rms_db&&rec.rms_db.length)?rec.rms_db.map(function(x){return x.toFixed(1);}).join(' / ')+' dB':'';
+      qh+='<button class="qbtn'+(a.ok?'':' bad')+'" onclick=\'showAudio('+JSON.stringify(a).replace(/'/g,'&#39;')+')\'>'
+        +'audio '+(a.ok?'OK':'CHECK')+(lv?' &middot; '+lv:'')+'</button>';
+    }
+    if(qh)h+='<div class="qual">'+qh+'</div>';
+  }
   if(it.error)h+='<div class="err">'+esc(it.error)+'</div>';
   if(it.scratch_retained)h+='<div class="reason">scratch retained for inspection</div>';
   return h+'</div>';
@@ -102,11 +136,65 @@ function draw(s){
   if(!runs.length){m.innerHTML='<div class="empty">no runs yet — drop a job file to begin</div>';return;}
   var h='';
   runs.forEach(function(r){
-    var rn=(r.run_number!=null?'Run #'+r.run_number+' \u00b7 ':'');var rt=r.started_at?new Date(r.started_at).toLocaleTimeString():'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+' \u00b7 '+rt+' \u00b7 '+esc(r.status)+'</div>';
-    (r.items||[]).forEach(function(it){h+=card(it);});
+    var rn=(r.run_number!=null?'Run #'+r.run_number+' \u00b7 ':'');var rt=r.started_at?new Date(r.started_at).toLocaleTimeString():'';
+    var rf=r.finished_at?new Date(r.finished_at).toLocaleTimeString():'';
+    var rel='';
+    if(r.started_at){
+      var endMs=r.finished_at?new Date(r.finished_at).getTime():Date.now();
+      var mins=(endMs-new Date(r.started_at).getTime())/60000;
+      if(mins>=0)rel=(mins<90?mins.toFixed(0)+' min':(mins/60).toFixed(1)+' h')+(r.finished_at?'':' so far');
+    }
+    var rtime=rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:'');var all=(r.items||[]);var nDone=all.filter(function(x){return x.phase==='DONE';}).length;var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;var tally=all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+tally+' \u00b7 '+rtime+' \u00b7 '+esc(r.status)+'</div>';
+    var items=(r.items||[]).slice();
+    var DONE={DONE:1,FAILED:1};
+    function bucket(it){ if(it.phase==='QUEUED') return 1; if(DONE[it.phase]) return 2; return 0; }
+    items.forEach(function(it,ix){it.__ix=ix;});
+    items.sort(function(a,b){
+      var ba=bucket(a), bb=bucket(b);
+      if(ba!==bb) return ba-bb;
+      return ba===2 ? b.__ix-a.__ix : a.__ix-b.__ix;
+    });
+    items.forEach(function(it){h+=card(it);});
   });
   m.innerHTML=h;
 }
+function closeModal(){document.getElementById('sdvpModal').classList.remove('on');
+  document.getElementById('sdvpBody').innerHTML='';}
+function openModal(title,html){
+  document.getElementById('sdvpTitle').textContent=title;
+  document.getElementById('sdvpBody').innerHTML=html;
+  var mo=document.getElementById('sdvpModal');
+  mo.classList.add('on');
+  var cb=document.getElementById('sdvpClose');
+  if(cb&&cb.focus)cb.focus();}
+function showSheet(src,title){openModal(title,'<img src="'+src+'">');}
+function showAudio(a){
+  var rec=a.recorded||{};
+  var h='<table class="r"><tr><th>check</th><th>result</th><th>detail</th></tr>';
+  (a.checks||[]).forEach(function(c){
+    h+='<tr><td>'+esc(c.name)+'</td><td><span class="chip c-'+(c.ok?'STORED':'FAILED')+'">'
+      +(c.ok?'ok':'FAILED')+'</span></td><td>'+esc(c.detail||'')+'</td></tr>';});
+  h+='</table>';
+  h+='<div class="meta" style="margin-top:16px;font-size:19px;color:#15302f">recorded, not gated</div>';
+  h+='<table class="r">';
+  if(rec.rms_db)h+='<tr><td>RMS level</td><td>'+rec.rms_db.map(function(x){return x.toFixed(2)+' dB';}).join(' &nbsp; ')+'</td></tr>';
+  if(rec.peak_db)h+='<tr><td>peak level</td><td>'+rec.peak_db.map(function(x){return x.toFixed(2)+' dB';}).join(' &nbsp; ')+'</td></tr>';
+  if(rec.imbalance_db!=null)h+='<tr><td>channel imbalance</td><td>'+rec.imbalance_db+' dB</td></tr>';
+  if(rec.channels!=null)h+='<tr><td>channels</td><td>'+rec.channels+'</td></tr>';
+  if(a.from_height!=null)h+='<tr><td>measured on</td><td>'+a.from_height+'p '+esc(a.codec||'')+'</td></tr>';
+  h+='</table>';
+  h+='<div class="reason">Levels are recorded but do not gate. No corpus exists yet to draw honest bands from.</div>';
+  openModal('audio',h);}
+document.getElementById('sdvpClose').addEventListener('click',closeModal);
+document.getElementById('sdvpModal').addEventListener('click',function(e){
+  if(e.target.id==='sdvpModal')closeModal();});
+// Attached to the modal element, not the document. The page gate's stubbed DOM
+// has no document-level listener, and a page that cannot be executed by the
+// gate cannot be checked by it - so the page bends, not the gate.
+// Focus lands on the close button when the modal opens, so Escape reaches here.
+(function(){var mo=document.getElementById('sdvpModal');
+ if(mo&&mo.addEventListener)mo.addEventListener('keydown',function(e){
+   if(e.key==='Escape')closeModal();});})();
 function tick(){
   fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();})
    .then(draw).catch(function(){document.getElementById('stamp').textContent='no answer';});

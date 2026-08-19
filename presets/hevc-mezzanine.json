@@ -1,0 +1,90 @@
+{
+  "name": "HEVC Mezzanine for Vimeo",
+  "codec": "hevc",
+  "encoder": "libx265",
+  "preset": "faster",
+  "pix_fmt": "yuv420p",
+  "movflags": "+faststart",
+  "tag": "hvc1",
+  "frame_rate": "preserve",
+  "single_decode": true,
+  "purpose": "ONE 1080p file per movie, uploaded to Vimeo as the source for THEIR encoding ladder. Not watched by customers. Constraint is a predictable byte ceiling: Vimeo bills $400/TB above the 7TB included, and only the master is stored. Capped CRF pins at the ceiling on hard content and comes in UNDER on clean shows, which 2-pass structurally cannot do.",
+  "measured": {
+    "date": "2026-08-18",
+    "ffmpeg": "n9.0.1-4-gb3ef323dd2-20260817",
+    "host": "Vultr CPU-Optimized 16 vCPU EPYC Genoa, Dallas",
+    "source": "BMDCA2026 BOB Dog Groups, 90s from 30:00 \u2014 worst-lighting show in the library",
+    "presets_compared": {
+      "medium": {
+        "wall_s": 60.95,
+        "speed_x": 1.47,
+        "mb": 51.7,
+        "mbps": 4.59,
+        "cores": 12.17
+      },
+      "fast": {
+        "wall_s": 47.0,
+        "speed_x": 1.92,
+        "mb": 44.4,
+        "mbps": 3.95,
+        "cores": 11.44
+      },
+      "faster": {
+        "wall_s": 36.73,
+        "speed_x": 2.45,
+        "mb": 42.8,
+        "mbps": 3.81,
+        "cores": 11.24
+      },
+      "veryfast": {
+        "wall_s": 36.6,
+        "speed_x": 2.46,
+        "mb": 42.8,
+        "mbps": 3.81,
+        "cores": 11.28
+      }
+    },
+    "finding": "faster chosen. Dr. K compared medium vs faster side by side on two identical screens playing concurrently, on the worst-lighting source in the library, and could detect little to no difference. 1.67x faster than medium. NOTE: x265 CRF is NOT normalised across presets - a faster preset at the same CRF makes cheaper decisions and yields a SMALLER, lower-quality file. The 17% size drop is quality not kept, not efficiency gained. Acceptable here because Vimeo re-encodes the mezzanine into their own ladder. faster and veryfast were identical (36.7 vs 36.6s, same bytes) - something other than the encoder is the floor, so there is nothing below faster to gain.",
+    "concurrency": {
+      "1_job": {
+        "wall_s": 60.6,
+        "speed_x": 1.47,
+        "cores": 12.17
+      },
+      "2_jobs": {
+        "aggregate_x": 1.25,
+        "realtime_x": 1.85,
+        "cores": 14.52
+      },
+      "3_jobs": {
+        "aggregate_x": 1.33,
+        "realtime_x": 1.97,
+        "cores": 15.32
+      },
+      "finding": "Diminishing fast. Third job added 6%. Box at 15.3/16 cores. Preset change (1.67x, free) beats concurrency (1.33x, needs a worker pool). Concurrency DEFERRED."
+    },
+    "full_length_at_medium": {
+      "source": "BOB Finale, 57.3 min",
+      "encode_s": 2508.4,
+      "speed_x": 1.37,
+      "verify_s": 256.7,
+      "mbps": 4.58,
+      "note": "HEVC verify decode is ~15x costlier per file than H.264: 4.3 min for ONE rung vs 92s for FIVE H.264 rungs in parallel."
+    },
+    "encoders_available": "No libsvt_hevc in this build. Software HEVC is libx265 and libkvazaar only; all other HEVC entries are hardware and there is no GPU on this instance. libsvtav1 IS present - AV1 unexplored, and viable for a mezzanine since Vimeo re-encodes and customer device support is irrelevant. Vimeo's acceptance of AV1 as a source is UNVERIFIED."
+  },
+  "rungs": [
+    {
+      "height": 1080,
+      "crf": 25,
+      "maxrate": "6M",
+      "bufsize": "12M",
+      "audio_kbps": 160
+    }
+  ],
+  "rules": {
+    "never_upscale": "Skip any rung STRICTLY ABOVE source height.",
+    "master_is_top_rung": "Skip a rung AT source height ONLY when the requested codec equals the master's codec. An H.264 master means 1080p HEVC is a real encode, not a skip.",
+    "apple_playback": "hvc1 tag is REQUIRED. Without it, a technically valid HEVC MP4 will not play on Apple devices."
+  }
+}

@@ -24,3 +24,6 @@ scratch/
 *.sqlite
 *.sqlite-*
 *.bak.*
+*.db
+*.db-wal
+*.db-shm

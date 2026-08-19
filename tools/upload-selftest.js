@@ -43,7 +43,8 @@ const mb = n => (n / 1e6).toFixed(1) + ' MB';
   console.log('');
   console.log('── 2. VERIFY ──');
   for (const o of enc.outputs) {
-    const v = await V.verifyRung(o.final, o.height, sInfo.duration_s);
+    const v = await V.verifyRung(o.final, o.height, sInfo.duration_s,
+      preset.rungs.find(x => Number(x.height) === Number(o.height)) || null);
     console.log('  ' + (v.ok ? 'ok  ' : 'FAIL') + '  ' + String(o.height).padStart(4) +
                 'p  ' + mb(v.bytes).padStart(9) + '  ' + v.mbps.toFixed(2) + ' Mbps' +
                 (v.ok ? '' : '  failed: ' + V.failedNames(v)));
@@ -56,7 +57,8 @@ const mb = n => (n / 1e6).toFixed(1) + ' MB';
   const bad = path.join(SCRATCH, 'truncated.mp4');
   const whole = fs.readFileSync(good);
   fs.writeFileSync(bad, whole.slice(0, Math.floor(whole.length * 0.4)));
-  const bv = await V.verifyRung(bad, 240, sInfo.duration_s);
+  const bv = await V.verifyRung(bad, 240, sInfo.duration_s,
+    preset.rungs.find(x => Number(x.height) === 240) || null);
   console.log('  verdict: ' + (bv.ok ? 'PASSED  <- VERIFIER IS BLIND' : 'rejected'));
   console.log('  failed checks: ' + (V.failedNames(bv) || '(none)'));
   if (bv.ok) { console.error('  ABORTING - verifier cannot detect a truncated file'); process.exit(1); }
