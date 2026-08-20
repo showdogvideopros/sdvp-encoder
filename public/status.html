@@ -118,6 +118,38 @@ var LAST=null;
 // button and the report can never disagree. Null until the first fetch lands;
 // a button with no verdict renders neutral rather than guessing.
 var VERDICTS=null;   // newest state the page fetched; the run report compares against it
+// REMAINING TIME on a live run. Projected from THIS run's own rate rather
+// than from historical averages, so it needs no rate table and gets sharper
+// with every film that finishes. Bytes are the unit of work: encode time
+// tracks duration, duration tracks bytes on this material (masters measure
+// 10.32-10.43 Mbps across 61 films), and skipped films contribute nothing to
+// either side, which is why skips need no special handling.
+// Silent until at least one film is done - a projection from a single film in
+// progress would swing wildly and teach the reader to ignore it.
+function remaining(r){
+  if(!r||r.finished_at||!r.started_at)return '';
+  var items=r.items||[];
+  var doneB=0,leftB=0,anyDone=false;
+  items.forEach(function(it){
+    var b=(it.probe&&it.probe.source_bytes)||it.bytes||0;
+    if(!b)return;
+    if(it.phase==='DONE'||it.phase==='FAILED'){ doneB+=b; anyDone=true; }
+    else if(it.phase==='QUEUED'){ leftB+=b; }
+    else {
+      // in flight: credit the fraction its progress bar reports
+      var pct=Math.max(0,Math.min(100,(it.progress&&it.progress.pct)||0));
+      doneB+=b*pct/100; leftB+=b*(1-pct/100);
+    }
+  });
+  if(!anyDone||!doneB||!leftB)return '';
+  var elapsed=(Date.now()-new Date(r.started_at).getTime())/1000;
+  if(elapsed<60)return '';
+  var secLeft=elapsed/doneB*leftB;
+  if(!isFinite(secLeft)||secLeft<=0)return '';
+  var w=secLeft<3600?(Math.round(secLeft/60)+' min'):((secLeft/3600).toFixed(1)+' h');
+  var done=new Date(Date.now()+secLeft*1000);
+  return ' \u00b7 ~'+w+' left, done about '+done.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+}
 function fmt(s){if(s==null)return'—';if(s<90)return s.toFixed(0)+'s';return (s/60).toFixed(1)+' min';}
 function mb(b){if(b==null)return'—';return b>=1e9?(b/1e9).toFixed(2)+' GB':(b/1e6).toFixed(1)+' MB';}
 function esc(t){return String(t==null?'':t).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
@@ -200,7 +232,7 @@ function draw(s){
       var mins=(endMs-new Date(r.started_at).getTime())/60000;
       if(mins>=0)rel=(mins<90?mins.toFixed(0)+' min':(mins/60).toFixed(1)+' h')+(r.finished_at?'':' so far');
     }
-    var rtime=rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:'');var all=(r.items||[]);var nDone=all.filter(function(x){return x.phase==='DONE';}).length;var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;var tally=all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+tally+' \u00b7 '+rtime+' \u00b7 '+esc(r.status)+repBtn(r)+'</div>';
+    var rtime=rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:'');var all=(r.items||[]);var nDone=all.filter(function(x){return x.phase==='DONE';}).length;var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;var tally=all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+tally+' \u00b7 '+rtime+remaining(r)+' \u00b7 '+esc(r.status)+repBtn(r)+'</div>';
     var items=(r.items||[]).slice();
     var DONE={DONE:1,FAILED:1};
     function bucket(it){ if(it.phase==='QUEUED') return 1; if(DONE[it.phase]) return 2; return 0; }

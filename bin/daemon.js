@@ -177,6 +177,31 @@ http.createServer((req, res) => {
     }
   }
 
+  // ---- ESTIMATE A RUN -----------------------------------------------------
+  // Rates are measured from the record on every call, so this sharpens as the
+  // box works. Returns a RANGE: mean absolute error against 12 finished runs
+  // was 26%, and a single figure would imply a precision the data does not
+  // support. Answers "one night or three days", not "how many minutes".
+  if (req.url === '/api/estimate') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 2e6) req.destroy(); });
+    req.on('end', function () {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      try {
+        const E = require('/root/build/lib/estimate.js');
+        const j = JSON.parse(body || '{}');
+        const films = j.films || [];
+        const e = E.estimate(films);
+        return res.end(JSON.stringify({ ok: true, seconds: e.seconds,
+          low: e.low, high: e.high, words: E.words(e.seconds), range: E.range(e),
+          sample: { h264: e.rates.n_h264, both: e.rates.n_both } }));
+      } catch (err) {
+        return res.end(JSON.stringify({ ok: false, error: String(err.message).slice(0, 200) }));
+      }
+    });
+    return;
+  }
+
   // ---- SAVE A PROFILE -----------------------------------------------------
   // The Media Encoder model: configure once, name it, keep it. Written as a
   // sidecar beside the presets, so adding the JMC profile in September is a

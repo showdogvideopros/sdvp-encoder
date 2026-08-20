@@ -452,13 +452,15 @@ function browserHtml(b,i){
 function isPicked(b,fid){ return b.files.some(function(x){return Number(x.fileid)===Number(fid);}); }
 function pick(i,fid,name,on){
   var b=BATCHES[i];
-  if(on){ if(!isPicked(b,fid)){ b.files.push({fileid:fid,name:name}); b.path=BROWSE.path; } }
+  if(on){ if(!isPicked(b,fid)){
+      var meta=BROWSE.files.filter(function(x){return Number(x.fileid)===Number(fid);})[0]||{};
+      b.files.push({fileid:fid,name:name,bytes:meta.size||0}); b.path=BROWSE.path; } }
   else b.files=b.files.filter(function(x){return Number(x.fileid)!==Number(fid);});
   drawBatches();
 }
 function pickAll(i,on){
   var b=BATCHES[i];
-  if(on){ BROWSE.files.forEach(function(f){ if(!isPicked(b,f.fileid)) b.files.push({fileid:f.fileid,name:f.name}); }); b.path=BROWSE.path; }
+  if(on){ BROWSE.files.forEach(function(f){ if(!isPicked(b,f.fileid)) b.files.push({fileid:f.fileid,name:f.name,bytes:f.size||0}); }); b.path=BROWSE.path; }
   else { var ids=BROWSE.files.map(function(f){return Number(f.fileid);});
          b.files=b.files.filter(function(x){return ids.indexOf(Number(x.fileid))===-1;}); }
   drawBatches();
@@ -510,15 +512,36 @@ function review(){
     b.items.forEach(function(it){ h+='<tr><td>'+esc(it.name)+'</td><td>'+per+'</td></tr>'; });
     h+='</table></div>';
   });
-  h+='<div class="sum">'+films+' file'+(films===1?'':'s')+' in '+job.batches.length+' batch'
+  h+='<div class="sum" id="sumLine">'+films+' file'+(films===1?'':'s')+' in '+job.batches.length+' batch'
     +(job.batches.length===1?'':'es')+', producing about '+outputs+' encoded file'+(outputs===1?'':'s')+'. '
-    +'Anything already present at its destination is skipped, so the real number may be lower.</div>';
+    +'Anything already present at its destination is skipped, so the real number may be lower.'
+    +'<div id="estLine" class="muted" style="margin-top:8px">estimating\u2026</div></div>';
   h+='<div style="margin-top:22px;display:flex;gap:11px;flex-wrap:wrap">'
     +'<button class="btn pri" id="bNow" onclick="send(false)">start now</button>'
     +'<button class="btn warn" id="bHold" onclick="send(true)">hold for later</button>'
     +'<button class="btn" onclick="closeModal()">back</button></div>';
   window.__job=job;
   openModal(h);
+  // ESTIMATE. Asked for after the modal is up so a slow answer never delays
+  // the review. Shown as a RANGE - the model's mean absolute error against
+  // finished runs is 26%, and a single figure would imply a precision that
+  // is not there. It answers "one night or three days".
+  (function(){
+    var fl=[];
+    BATCHES.forEach(function(b){
+      var codecs=[]; outputsOf(b).forEach(function(o){ if(codecs.indexOf(o.codec)===-1)codecs.push(o.codec); });
+      b.files.forEach(function(f){ fl.push({bytes:f.bytes||0,codecs:codecs}); });
+    });
+    fetch('/api/estimate',{method:'POST',cache:'no-store',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({films:fl})})
+     .then(function(r){return r.json();}).then(function(j){
+       var el=document.getElementById('estLine'); if(!el)return;
+       if(!j.ok||!j.seconds){ el.textContent=''; return; }
+       el.innerHTML='<b>Estimated run time: '+esc(j.range)+'</b>'
+         +' &nbsp;<span class="muted">— from rates measured on this box. '
+         +'Skipped files finish instantly, so a run with much already in place lands under the low end.</span>';
+     }).catch(function(){ var el=document.getElementById('estLine'); if(el)el.textContent=''; });
+  })();
 }
 function send(hold){
   if(SENDING)return; SENDING=true;
