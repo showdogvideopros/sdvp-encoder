@@ -129,9 +129,29 @@ var VERDICTS=null;   // newest state the page fetched; the run report compares a
 function remaining(r){
   if(!r||r.finished_at||!r.started_at)return '';
   var items=r.items||[];
+  // ⛔ A QUEUED FILM HAS NO BYTE COUNT. [MEASURED 2026-08-20, run 30] The size
+  // is written when the daemon FETCHES a film, not when the run is built - so
+  // fourteen queued films read as zero work and the first version projected
+  // "4 min left" on a 47 GB run. If ANY unfinished film lacks a size, bytes
+  // cannot measure the remaining work and we fall back to counting FILMS.
+  // Less accurate, never absurd. A figure that degrades gracefully beats one
+  // that lies confidently at 3 AM.
+  // ⛔ NO FALLBACK BY FILE COUNT. [MEASURED 2026-08-20, run 30] Counting films
+  // treats a 3-minute BRACE CLASS as equal to a 149-minute BITCH CLASSES, and
+  // this run began with its shortest film - by film count it read "0.7 h left"
+  // when the true answer was hours. Both a byte projection with missing sizes
+  // and a film-count projection were confidently wrong in the same direction.
+  // If the sizes are not all known, SAY NOTHING. Silence is honest; a wrong
+  // number read at 3 AM is not.
+  var sized=true;
+  items.forEach(function(it){
+    if(it.phase==='DONE'||it.phase==='FAILED')return;
+    if(!((it.probe&&it.probe.source_bytes)||it.bytes))sized=false;
+  });
+  if(!sized)return '';
   var doneB=0,leftB=0,anyDone=false;
   items.forEach(function(it){
-    var b=(it.probe&&it.probe.source_bytes)||it.bytes||0;
+    var b=((it.probe&&it.probe.source_bytes)||it.bytes||0);
     if(!b)return;
     if(it.phase==='DONE'||it.phase==='FAILED'){ doneB+=b; anyDone=true; }
     else if(it.phase==='QUEUED'){ leftB+=b; }
@@ -148,7 +168,8 @@ function remaining(r){
   if(!isFinite(secLeft)||secLeft<=0)return '';
   var w=secLeft<3600?(Math.round(secLeft/60)+' min'):((secLeft/3600).toFixed(1)+' h');
   var done=new Date(Date.now()+secLeft*1000);
-  return ' \u00b7 ~'+w+' left, done about '+done.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  return ' \u00b7 ~'+w+' left, done about '+done.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+    ;
 }
 function fmt(s){if(s==null)return'—';if(s<90)return s.toFixed(0)+'s';return (s/60).toFixed(1)+' min';}
 function mb(b){if(b==null)return'—';return b>=1e9?(b/1e9).toFixed(2)+' GB':(b/1e6).toFixed(1)+' MB';}

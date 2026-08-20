@@ -478,7 +478,13 @@ function buildJob(){
     batches:BATCHES.map(function(b){
       var p=profileOf(b);
       return { label:(p?p.name:'batch'), source_path:b.path,
-               outputs:outputsOf(b), items:b.files.map(function(f){return {fileid:f.fileid,name:f.name};}) };
+               outputs:outputsOf(b),
+               // CARRY THE SIZE. The panel knows it from the browse listing and
+               // was discarding it. Without it the daemon has no byte count for
+               // a QUEUED film - it only learns the size when it fetches - so
+               // the run card could not project remaining time until every film
+               // had already been fetched. [MEASURED 2026-08-20, run 30]
+               items:b.files.map(function(f){return {fileid:f.fileid,name:f.name,bytes:f.bytes||0};}) };
     })
   };
 }
