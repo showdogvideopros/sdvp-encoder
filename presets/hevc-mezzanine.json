@@ -80,11 +80,58 @@
       "maxrate": "6M",
       "bufsize": "12M",
       "audio_kbps": 160
+    },
+    {
+      "height": 720,
+      "crf": 25,
+      "maxrate": "3650k",
+      "bufsize": "7300k",
+      "audio_kbps": 160,
+      "provisional": true
+    },
+    {
+      "height": 540,
+      "crf": 25,
+      "maxrate": "2350k",
+      "bufsize": "4700k",
+      "audio_kbps": 128,
+      "provisional": true
+    },
+    {
+      "height": 480,
+      "crf": 26,
+      "maxrate": "1650k",
+      "bufsize": "3300k",
+      "audio_kbps": 128,
+      "provisional": true
+    },
+    {
+      "height": 360,
+      "crf": 26,
+      "maxrate": "1M",
+      "bufsize": "2M",
+      "audio_kbps": 96,
+      "provisional": true
+    },
+    {
+      "height": 240,
+      "crf": 27,
+      "maxrate": "600k",
+      "bufsize": "1200k",
+      "audio_kbps": 96,
+      "provisional": true
     }
   ],
   "rules": {
     "never_upscale": "Skip any rung STRICTLY ABOVE source height.",
     "master_is_top_rung": "Skip a rung AT source height ONLY when the requested codec equals the master's codec. An H.264 master means 1080p HEVC is a real encode, not a skip.",
     "apple_playback": "hvc1 tag is REQUIRED. Without it, a technically valid HEVC MP4 will not play on Apple devices."
+  },
+  "rung_provenance": {
+    "measured": "1080p ONLY. Measured 2026-08-18 against BMDCA2026 BOB Dog Groups, the worst-lighting show in the library. crf 25 / 6M ceiling.",
+    "derived": "720p and below are DERIVED, NOT MEASURED (2026-08-20). Method: the ratio of HEVC to H.264 ceiling measured at 1080p (0.6667) applied to each H.264 rung ceiling, bufsize held at 2x the ceiling as in both presets, crf shifted by the same +3 measured at 1080p.",
+    "assumption": "That the 1080p HEVC/H.264 ratio holds at lower heights. It probably does NOT hold exactly - HEVC efficiency generally IMPROVES at lower bitrates, so these ceilings are likely CONSERVATIVE and real files should land under them rather than at them. That is the safe direction, and the bitrate band check will catch anything absurd.",
+    "status": "PROVISIONAL. Measure before any 2027 HEVC ladder is used in production.",
+    "derived_on": "2026-08-20T19:25:38.627829Z"
   }
 }

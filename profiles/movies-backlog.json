@@ -1,0 +1,23 @@
+{
+  "name": "MOVIES-BACKLOG",
+  "description": "Saved from the jobs panel.",
+  "order": 50,
+  "outputs": [
+    {
+      "codec": "h264",
+      "preset": "h264-standard",
+      "rungs": [
+        1080,
+        720,
+        540,
+        480,
+        360,
+        240
+      ],
+      "destinations": [
+        "pcloud"
+      ]
+    }
+  ],
+  "saved_at": "2026-08-20T19:54:40.883Z"
+}

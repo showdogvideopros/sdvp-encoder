@@ -14,6 +14,116 @@ const state = st.load();
 state.daemon = { pid: process.pid, started_at: new Date().toISOString(), current_item: null };
 if (!state.runs) state.runs = [];
 const save = (o) => st.save(state, o);
+
+// ---- CRASH RECOVERY ------------------------------------------------------
+// [MEASURED 2026-08-20] Before this existed, nothing looked at an interrupted
+// item on startup: the state loaded verbatim, current_item was cleared to
+// null, and the job file had been renamed .accepted the moment it was picked
+// up - so there was no queue entry left to find and no code that would notice.
+// An unattended crash did not leave work "stuck"; it DROPPED it silently,
+// abandoning every remaining movie in the job.
+//
+// THE RULE, deliberately conservative: any item not in a terminal state is
+// abandoned, its scratch discarded, and the whole job re-queued from its own
+// job file. Partial output is never trusted - a half-written encode looks
+// exactly like a finished one on disk. Re-encoding is cheap next to shipping
+// a truncated file, and the per-destination existence check means finished
+// rungs are SKIPPED rather than redone, so a movie that was nine-tenths done
+// costs one rung, not the whole ladder.
+//
+// The interrupted run is left in the record as FAILED with its reason, and the
+// re-queued job becomes a NEW run number. That is honest: the first run was
+// interrupted, the second is a fresh instantiation of the same job, and its
+// report will correctly show most work skipped as already present.
+const WORKING = { FETCHING:1, PROBING:1, PLANNING:1, ENCODING:1,
+                  VERIFYING:1, UPLOADING:1, CLEANING:1 };
+(function recoverInterrupted() {
+  const SCRATCH = '/var/lib/sdvp-encoder/scratch';
+  let requeued = 0, marked = 0;
+  for (const run of (state.runs || [])) {
+    // UNSTARTED is TERMINAL - it means a stopped run's films that will never
+    // run. Sweeping them as abandoned work would make a later crash re-queue
+    // a job the operator deliberately halted.
+    const hit = (run.items || []).filter(i =>
+      (WORKING[i.phase] || i.phase === 'QUEUED') && i.phase !== 'UNSTARTED');
+    if (!hit.length) continue;
+    for (const it of hit) {
+      if (WORKING[it.phase]) {
+        // Discard partial output. Named by item_id, so this is exact - never a
+        // sweep by age, never a guess about which directory belonged to what.
+        const dir = path.join(SCRATCH, String(it.item_id));
+        try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); }
+        catch (e) { console.error('recover: could not clear scratch for ' +
+                                  it.item_id + ': ' + e.message); }
+        it.scratch_retained = false;
+      }
+      it.error = 'daemon stopped during ' + it.phase + ' - work abandoned, job re-queued';
+      it.phase = 'FAILED';
+      marked++;
+    }
+    if (!run.finished_at) {
+      run.finished_at = new Date().toISOString();
+      run.status = 'INTERRUPTED';
+    }
+    // A DELIBERATE STOP IS NOT A CRASH. If the operator asked for this, the
+    // job must NOT come back - that is the entire difference between ABORT and
+    // a power cut, and getting it wrong would mean the button does nothing.
+    const stopped = state.stop_requested &&
+                    Number(state.stop_requested.run_number) === Number(run.run_number);
+    if (stopped) {
+      run.status = state.stop_requested.mode === 'ABORT' ? 'ABORTED' : 'STOPPED';
+      for (const it of hit) {
+        it.error = 'run ' + run.status.toLowerCase() + ' by operator';
+      }
+      st.event({ kind: 'run_' + run.status.toLowerCase(), run: run.run_number });
+      console.log('run ' + run.run_number + ' was ' + run.status +
+                  ' by request - not re-queued');
+    }
+    // WRITE THE INTERRUPTION INTO THE RECORD. [MEASURED 2026-08-20] A killed
+    // run never reached the point where anything is recorded, so run 16 had NO
+    // record row at all - the crash existed only in state.json and on the
+    // page. The record is the durable artifact; the state file is not. After a
+    // five-day unattended burn, "how many times did it crash, and where" must
+    // be answerable from the record alone.
+    // Wrapped whole: failing to write history must never stop the daemon
+    // starting, which is the one thing that would turn a crash into an outage.
+    try {
+      const R = require('/root/build/lib/record.js');
+      R.upsertRun(run, { box_host: require('os').hostname() });
+      for (const it of hit) { try { R.upsertMovie(run.run_id, it); } catch (e2) {} }
+      R.close();
+    } catch (e) {
+      console.error('recover: could not record interrupted run ' +
+                    run.run_number + ': ' + e.message);
+    }
+    // Put the job back in the queue by its original name. The scanner picks it
+    // up as if newly dropped and it becomes a new run.
+    if (!stopped && run.job_file && String(run.job_file).endsWith('.accepted')) {
+      const back = String(run.job_file).replace(/\.accepted$/, '');
+      try {
+        if (fs.existsSync(run.job_file) && !fs.existsSync(back)) {
+          fs.renameSync(run.job_file, back);
+          requeued++;
+          st.event({ kind: 'job_requeued_after_crash', file: back,
+                     from_run: run.run_number, items_abandoned: hit.length });
+        }
+      } catch (e) {
+        console.error('recover: could not re-queue ' + run.job_file + ': ' + e.message);
+      }
+    }
+  }
+  // The flag has done its work. Leaving it set would make the NEXT crash look
+  // like a deliberate stop and silently drop a job that should have resumed.
+  if (state.stop_requested) {
+    state.last_stop = state.stop_requested;
+    delete state.stop_requested;
+  }
+  if (marked || requeued) {
+    console.log('crash recovery: ' + marked + ' item(s) abandoned, ' +
+                requeued + ' job(s) re-queued');
+  }
+})();
+
 save({ force: true });
 
 http.createServer((req, res) => {
@@ -36,12 +146,562 @@ http.createServer((req, res) => {
     return res.end(fs.readFileSync(f));
   }
 
+  // ---- PROFILES -----------------------------------------------------------
+  // Sidecar files beside the presets, read at request time so the panel can
+  // never offer something the box cannot do. Adding a JMC profile in September
+  // is dropping a file in, not a deploy.
+  if (req.url === '/api/profiles') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    try {
+      const dir = '/root/build/profiles';
+      const out = fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
+        const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        j._file = f; return j;
+      }).sort((a, b) => (a.order || 99) - (b.order || 99));
+      // The panel also needs to know which rungs each preset actually defines,
+      // so a hand-edited output can never name a rung that does not exist.
+      const presets = {};
+      for (const f of fs.readdirSync('/root/build/presets').filter(x => x.endsWith('.json'))) {
+        const j = JSON.parse(fs.readFileSync('/root/build/presets/' + f, 'utf8'));
+        // 'provisional' marks rungs DERIVED rather than measured. The editor
+        // labels them so a ladder built on them is never mistaken for one
+        // resting on measurement. See rung_provenance in the preset itself.
+        presets[f.replace(/\.json$/, '')] =
+          { name: j.name, codec: j.codec,
+            rungs: (j.rungs || []).map(r => r.height),
+            provisional: (j.rungs || []).filter(r => r.provisional).map(r => r.height) };
+      }
+      return res.end(JSON.stringify({ ok: true, profiles: out, presets: presets }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // ---- SAVE A PROFILE -----------------------------------------------------
+  // The Media Encoder model: configure once, name it, keep it. Written as a
+  // sidecar beside the presets, so adding the JMC profile in September is a
+  // file appearing, not a deploy.
+  // Validated exactly like a job's outputs - a profile that names a rung its
+  // preset does not define would fail at encode time, hours later.
+  if (req.url === '/api/profile/save') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 2e5) req.destroy(); });
+    req.on('end', function () {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      let prof;
+      try { prof = JSON.parse(body); }
+      catch (e) { return res.end(JSON.stringify({ ok: false, error: 'could not read it' })); }
+      const problems = [];
+      const nm = String(prof.name || '').trim();
+      if (!nm) problems.push('the profile needs a name');
+      if (!/^[A-Za-z0-9 _.-]+$/.test(nm)) problems.push('use letters, numbers, spaces, dot, dash or underscore in the name');
+      const outs = prof.outputs || [];
+      if (!outs.length) problems.push('nothing is selected');
+      outs.forEach(function (o) {
+        let ps = null;
+        try { ps = JSON.parse(fs.readFileSync('/root/build/presets/' + o.preset + '.json', 'utf8')); }
+        catch (e) { problems.push('preset "' + o.preset + '" does not exist'); return; }
+        const have = (ps.rungs || []).map(r => Number(r.height));
+        (o.rungs || []).forEach(function (h) {
+          if (have.indexOf(Number(h)) === -1) problems.push(o.preset + ' has no ' + h + 'p rung');
+        });
+        if (!(o.rungs || []).length) problems.push(o.preset + ': no rungs chosen');
+        if (!(o.destinations || []).length) problems.push(o.preset + ': no destination chosen');
+        const ov = o.destination_overrides || {};
+        Object.keys(ov).forEach(function (h) {
+          if ((o.rungs || []).map(Number).indexOf(Number(h)) === -1)
+            problems.push(o.preset + ': a destination is set for ' + h + 'p, which is not selected');
+          if (!(ov[h] || []).length) problems.push(o.preset + ': ' + h + 'p has no destination');
+        });
+      });
+      if (problems.length) return res.end(JSON.stringify({ ok: false, problems: problems }));
+      const slug = nm.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const dest = '/root/build/profiles/' + slug + '.json';
+      const out = { name: nm, description: prof.description || 'Saved from the jobs panel.',
+                    order: Number(prof.order) || 50, outputs: outs,
+                    saved_at: new Date().toISOString() };
+      try {
+        const tmp = dest + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n');
+        fs.renameSync(tmp, dest);
+      } catch (e) {
+        return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+      }
+      return res.end(JSON.stringify({ ok: true, file: slug + '.json', name: nm,
+                                      replaced: false, message: 'Saved as "' + nm + '".' }));
+    });
+    return;
+  }
+
+  // ---- DELETE A PROFILE ---------------------------------------------------
+  // Presets accumulate experiments. Nothing else is touched: a held job keeps
+  // its own copy of the ladder, so deleting a preset never changes work
+  // already built.
+  if (req.url.indexOf('/api/profile/delete/') === 0) {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const raw = decodeURIComponent(req.url.split('/').pop().split('?')[0]);
+    if (!/^[0-9A-Za-z_.-]+\.json$/.test(raw) || raw.indexOf('..') !== -1) {
+      return res.end(JSON.stringify({ ok: false, error: 'bad preset name' }));
+    }
+    const f = '/root/build/profiles/' + raw;
+    if (!fs.existsSync(f)) {
+      return res.end(JSON.stringify({ ok: false, error: 'no such preset' }));
+    }
+    try {
+      fs.unlinkSync(f);
+      return res.end(JSON.stringify({ ok: true, message: 'Deleted.' }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // ---- BROWSE pCLOUD ------------------------------------------------------
+  if (req.url.indexOf('/api/browse') === 0) {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const q = req.url.indexOf('?');
+    let folder = '/';
+    if (q >= 0) {
+      const params = new URLSearchParams(req.url.slice(q + 1));
+      folder = params.get('path') || '/';
+    }
+    const pc = require('/root/build/lib/pcloud.js');
+    return pc.listFolder(folder).then(function (entries) {
+      const dirs  = (entries || []).filter(e => e.isfolder)
+                      .sort((a, b) => a.name.localeCompare(b.name));
+      // NEWEST FIRST. Dr. K works forward through a production day, so the
+      // films he just uploaded belong at the top of the list, not buried
+      // alphabetically among everything the show has ever produced.
+      const files = (entries || []).filter(e => !e.isfolder && /\.(mp4|mov|m4v)$/i.test(e.name))
+                      .sort(function (a, b) {
+                        const ta = Date.parse(a.modified || a.created || 0) || 0;
+                        const tb = Date.parse(b.modified || b.created || 0) || 0;
+                        if (tb !== ta) return tb - ta;
+                        return a.name.localeCompare(b.name);
+                      });
+      res.end(JSON.stringify({ ok: true, path: folder, folders: dirs, files: files }));
+    }).catch(function (e) {
+      res.end(JSON.stringify({ ok: false, error: pc.redact(String(e.message)).slice(0, 200) }));
+    });
+  }
+
+  // ---- HELD JOBS ----------------------------------------------------------
+  if (req.url === '/api/held') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    try {
+      const dir = '/var/lib/sdvp-encoder/held';
+      const out = fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
+        const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        const films = (j.batches || []).reduce((n, b) => n + ((b.items || []).length), 0);
+        return { file: f, label: j.job_label, built_at: j.built_at || null,
+                 batches: (j.batches || []).length, films: films,
+                 job_uid: j.job_uid || null };
+      }).sort((a, b) => String(a.built_at).localeCompare(String(b.built_at)));
+      return res.end(JSON.stringify({ ok: true, held: out }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // ---- WRITE A JOB --------------------------------------------------------
+  // The first WRITE surface on this box. Everything else reads.
+  //
+  // TWO GUARDS, both here rather than in the page, because a guard in the page
+  // protects only the tab it runs in:
+  //  1. VALIDATION - the daemon refuses to write a job it could not run.
+  //     A file that parses but names a preset that does not exist fails at the
+  //     first film, hours after the operator walked away.
+  //  2. IDEMPOTENCE - the panel stamps each job with a uid. A second write
+  //     carrying a uid already seen is REFUSED. A double-click, or a second
+  //     browser tab, cannot queue thirty hours of duplicate encoding.
+  //
+  // Written atomically: temp name, then rename. A crash mid-write leaves no
+  // half-file for the scanner to pick up.
+  if (req.url === '/api/job' || req.url === '/api/job/hold') {
+    const hold = req.url === '/api/job/hold';
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 2e6) req.destroy(); });
+    req.on('end', function () {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      let job;
+      try { job = JSON.parse(body); }
+      catch (e) { return res.end(JSON.stringify({ ok: false, error: 'could not read the job' })); }
+
+      const problems = [];
+      if (Number(job.job_file_version) !== 3) problems.push('job_file_version must be 3');
+      if (!job.job_label || !String(job.job_label).trim()) problems.push('the job needs a name');
+      if (!job.job_uid) problems.push('missing job identifier');
+      const batches = job.batches || [];
+      if (!batches.length) problems.push('the job has no batches');
+      batches.forEach(function (b, bi) {
+        const where = 'batch ' + (bi + 1) + (b.label ? ' (' + b.label + ')' : '');
+        if (!b.source_path) problems.push(where + ' has no source folder');
+        if (!(b.items || []).length) problems.push(where + ' has no files selected');
+        (b.items || []).forEach(function (it) {
+          if (!it.fileid) problems.push(where + ': "' + (it.name || '?') + '" has no file id');
+        });
+        if (!(b.outputs || []).length) problems.push(where + ' has no outputs');
+        (b.outputs || []).forEach(function (o) {
+          let ps = null;
+          try { ps = JSON.parse(fs.readFileSync('/root/build/presets/' + o.preset + '.json', 'utf8')); }
+          catch (e) { problems.push(where + ': preset "' + o.preset + '" does not exist'); return; }
+          const have = (ps.rungs || []).map(r => Number(r.height));
+          if (!(o.rungs || []).length) problems.push(where + ': ' + o.preset + ' has no rungs chosen');
+          (o.rungs || []).forEach(function (h) {
+            if (have.indexOf(Number(h)) === -1)
+              problems.push(where + ': ' + o.preset + ' has no ' + h + 'p rung');
+          });
+          if (!(o.destinations || []).length)
+            problems.push(where + ': ' + o.preset + ' has no destination');
+          (o.destinations || []).forEach(function (d) {
+            if (d !== 'pcloud' && d !== 'vimeo')
+              problems.push(where + ': "' + d + '" is not a destination');
+          });
+        });
+      });
+      if (problems.length) {
+        return res.end(JSON.stringify({ ok: false, problems: problems }));
+      }
+
+      // Has this exact job already been written? Check both folders.
+      const qdir = path.join(st.ROOT, 'jobs'), hdir = path.join(st.ROOT, 'held');
+      for (const dir of [qdir, hdir]) {
+        for (const f of fs.readdirSync(dir)) {
+          if (!/\.json(\.accepted)?$/.test(f)) continue;
+          try {
+            const prev = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+            if (prev.job_uid && prev.job_uid === job.job_uid) {
+              return res.end(JSON.stringify({ ok: false, duplicate: true,
+                error: 'That job was already sent. Nothing was queued twice.' }));
+            }
+          } catch (e) { /* unreadable file is not a duplicate */ }
+        }
+      }
+
+      job.built_at = new Date().toISOString();
+      const slug = String(job.job_label).replace(/[^A-Za-z0-9]+/g, '-')
+                     .replace(/^-+|-+$/g, '').slice(0, 40) || 'job';
+      const stamp = job.built_at.replace(/[-:]/g, '').replace(/\..+$/, '');
+      const name = stamp + '_' + slug + '.json';
+      const dest = path.join(hold ? hdir : qdir, name);
+      try {
+        const tmp = dest + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(job, null, 2) + '\n');
+        fs.renameSync(tmp, dest);
+      } catch (e) {
+        return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+      }
+      const films = batches.reduce((n, b) => n + (b.items || []).length, 0);
+      st.event({ kind: hold ? 'job_held' : 'job_queued', file: dest,
+                 label: job.job_label, films: films });
+      return res.end(JSON.stringify({ ok: true, held: hold, file: name, films: films,
+        message: hold ? ('Held. ' + films + ' file(s) waiting to be released.')
+                      : ('Queued. ' + films + ' file(s) — the encoder starts within seconds.') }));
+    });
+    return;
+  }
+
+  // ---- READ ONE HELD JOB BACK ---------------------------------------------
+  // So the panel can load it into the builder, change it, and send it again.
+  // Editing replaces rather than adds: the panel discards the old file after a
+  // successful write, so two near-identical held jobs can never accumulate and
+  // leave the operator guessing which one is current.
+  if (req.url.indexOf('/api/held/get/') === 0) {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const raw = decodeURIComponent(req.url.split('/').pop().split('?')[0]);
+    if (!/^[0-9A-Za-z_.-]+\.json$/.test(raw) || raw.indexOf('..') !== -1) {
+      return res.end(JSON.stringify({ ok: false, error: 'bad job name' }));
+    }
+    const f = path.join(st.ROOT, 'held', raw);
+    if (!fs.existsSync(f)) {
+      return res.end(JSON.stringify({ ok: false, error: 'that job is no longer held' }));
+    }
+    try {
+      return res.end(JSON.stringify({ ok: true, file: raw,
+                                      job: JSON.parse(fs.readFileSync(f, 'utf8')) }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // ---- RELEASE OR DISCARD A HELD JOB --------------------------------------
+  // Release MOVES the file into the queue - it does not copy it, so the job
+  // cannot exist in both places and be run twice. Rename is atomic on the same
+  // filesystem, so there is no window where the scanner sees a partial file.
+  //
+  // The queued name keeps the ORIGINAL build timestamp, so several jobs
+  // released together run in the order they were BUILT, not alphabetically by
+  // label. Dr. K's JMDs-before-MOVIES case depends on that.
+  //
+  // The filename is taken apart and rebuilt from its own basename: nothing the
+  // caller sends can point outside the held folder.
+  if (req.url.indexOf('/api/held/release/') === 0 ||
+      req.url.indexOf('/api/held/discard/') === 0) {
+    const release = req.url.indexOf('/api/held/release/') === 0;
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const raw = decodeURIComponent(req.url.split('/').pop().split('?')[0]);
+    if (!/^[0-9A-Za-z_.-]+\.json$/.test(raw) || raw.indexOf('..') !== -1) {
+      return res.end(JSON.stringify({ ok: false, error: 'bad job name' }));
+    }
+    const from = path.join(st.ROOT, 'held', raw);
+    if (!fs.existsSync(from)) {
+      return res.end(JSON.stringify({ ok: false, error: 'that job is no longer held' }));
+    }
+    try {
+      if (!release) {
+        fs.unlinkSync(from);
+        st.event({ kind: 'job_discarded', file: raw });
+        return res.end(JSON.stringify({ ok: true, discarded: true,
+                                        message: 'Discarded.' }));
+      }
+      const to = path.join(st.ROOT, 'jobs', raw);
+      if (fs.existsSync(to)) {
+        return res.end(JSON.stringify({ ok: false,
+          error: 'a job by that name is already queued' }));
+      }
+      fs.renameSync(from, to);
+      st.event({ kind: 'job_released', file: raw });
+      return res.end(JSON.stringify({ ok: true, released: true,
+        message: 'Released to the queue. The encoder starts within seconds.' }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // ---- STOP AND ABORT ---------------------------------------------------
+  // TWO STATES, Dr. K's ruling 2026-08-20:
+  //   STOP  - the run is correctly configured and the film in flight is fine.
+  //           Finish it completely, then halt. Nothing downstream starts.
+  //   ABORT - something is wrong with the master or the configuration. Stop
+  //           everything now. Implemented by killing the daemon, because the
+  //           encoder holds its ffmpeg child privately and nothing can signal
+  //           it from outside. Recovery then reads the flag and REFUSES to
+  //           re-queue - which is the whole difference from a crash.
+  //
+  // AN UPLOAD IN FLIGHT ALWAYS COMPLETES, whichever button is pressed.
+  // A truncated file at pCloud would sit in the destination folder under the
+  // correct name, and a later run's existence check would read that name and
+  // skip the film - shipping a broken file believing it fine. Enforced here
+  // by REFUSING the abort, not by trusting the operator to remember.
+  // NOTHING IS EVER DELETED AT A DESTINATION. Dr. K's ruling, absolute.
+  //
+  // There is NO CONTINUE. A stopped run is re-made as a fresh job, because a
+  // resumable run is a run that resumes with the wrong configuration intact.
+  if (req.url === '/api/stop' || req.url === '/api/abort') {
+    const abort = req.url === '/api/abort';
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const run = (state.runs || [])[0];
+    if (!run || run.finished_at) {
+      return res.end(JSON.stringify({ ok: false, error: 'no run is in flight' }));
+    }
+    const inFlight = (run.items || []).find(i => i.phase === 'UPLOADING');
+    if (abort && inFlight) {
+      return res.end(JSON.stringify({ ok: false, uploading: true,
+        error: 'An upload is in flight for ' + (inFlight.name || 'a file') +
+               '. Aborting now could leave a truncated file at the destination ' +
+               'under the right name, which a later run would trust. Press STOP ' +
+               'instead - it lets this upload finish, then halts.' }));
+    }
+    state.stop_requested = { mode: abort ? 'ABORT' : 'STOP',
+                             at: new Date().toISOString(),
+                             run_number: run.run_number };
+    save({ force: true });
+    if (abort) {
+      setTimeout(function () { console.log('ABORT requested - exiting'); process.exit(1); }, 400);
+      return res.end(JSON.stringify({ ok: true, mode: 'ABORT',
+        message: 'Aborting now. The daemon will stop and will not resume this job.' }));
+    }
+    return res.end(JSON.stringify({ ok: true, mode: 'STOP',
+      message: 'Stopping after the current file finishes. Nothing further will start.' }));
+  }
+
+  // VERDICT, computed in ONE place and read by BOTH surfaces. The button and
+  // the report cannot disagree because they do not each decide.
+  //
+  // THE RATCHET (Dr. K, 2026-08-20): a FINDING sticks for the life of the run.
+  // A finding is a fact about a file that was already processed - a failed
+  // rung, an unconfirmed delivery, a bad or missing measurement, a retry, a
+  // retained scratch directory. Those rows stay amber or red no matter what
+  // the remaining movies do, and they are sticky BY CONSTRUCTION: the record
+  // keeps the row, so the query still finds it at movie 16.
+  // INCOMPLETENESS is not a finding. "Still mid-phase" is amber at movie 3
+  // because 13 have not started; it must clear as they finish, or every run
+  // reads amber from its first minute and the colour stops meaning anything.
+  function runVerdict(R, rid) {
+    const q1 = (s, p) => R.query(s, p)[0] || {};
+    const f = q1('SELECT ' +
+      "SUM(CASE WHEN m.phase='FAILED' THEN 1 ELSE 0 END) AS mv_failed, " +
+      "SUM(CASE WHEN m.error IS NOT NULL AND m.error<>'' THEN 1 ELSE 0 END) AS mv_err " +
+      'FROM movies m WHERE m.run_id=?', [rid]);
+    const r = q1('SELECT ' +
+      "SUM(CASE WHEN r.state='FAILED' THEN 1 ELSE 0 END) AS rung_failed " +
+      'FROM rungs r JOIN movies m ON m.item_id=r.item_id WHERE m.run_id=?', [rid]);
+    const d = q1('SELECT ' +
+      'SUM(CASE WHEN d.ok IS NOT 1 THEN 1 ELSE 0 END) AS not_ok, ' +
+      'SUM(CASE WHEN d.attempts > 1 THEN 1 ELSE 0 END) AS retried, ' +
+      // PENDING is an unanswered question, not a bad answer, and scores CHECK.
+      // A MISMATCH or FAILED verdict is a bad answer and scores FAIL.
+      // [MEASURED 2026-08-20] run 10 carried a PENDING mezzanine that had been
+      // fine all along - 0.44 s drift against a 2 s tolerance, upload and
+      // transcode both complete. Scoring it FAIL would have left a permanent
+      // red on a file nothing was ever wrong with.
+      "SUM(CASE WHEN d.destination='vimeo' AND d.witness_state IS NOT NULL " +
+      "         AND d.witness_state NOT IN ('VERIFIED','PENDING') " +
+      '         THEN 1 ELSE 0 END) AS wit_bad, ' +
+      "SUM(CASE WHEN d.destination='vimeo' AND d.witness_state='PENDING' " +
+      '         THEN 1 ELSE 0 END) AS wit_pending, ' +
+      "SUM(CASE WHEN d.destination='vimeo' AND d.witness_drift_s IS NULL " +
+      '         THEN 1 ELSE 0 END) AS wit_nodrift ' +
+      'FROM deliveries d JOIN rungs r ON r.rung_id=d.rung_id ' +
+      'JOIN movies m ON m.item_id=r.item_id WHERE m.run_id=?', [rid]);
+    const a = q1('SELECT ' +
+      'SUM(CASE WHEN q.audio_ok=0 THEN 1 ELSE 0 END) AS aud_failed, ' +
+      'SUM(CASE WHEN q.audio_ok IS NOT NULL AND q.flat_max IS NULL ' +
+      '         THEN 1 ELSE 0 END) AS aud_old ' +
+      'FROM quality q JOIN movies m ON m.item_id=q.item_id WHERE m.run_id=?', [rid]);
+    // Duplicate audio readings across DIFFERENT movies. Two movies of unequal
+    // length cannot measure identically; this is what caught the probe defect.
+    const dup = q1('SELECT COUNT(*) AS n FROM (' +
+      'SELECT q.rms_min_db, q.rms_max_db FROM quality q ' +
+      'JOIN movies m ON m.item_id=q.item_id ' +
+      'WHERE m.run_id=? AND q.rms_max_db IS NOT NULL ' +
+      'GROUP BY q.rms_min_db, q.rms_max_db HAVING COUNT(*) > 1)', [rid]);
+
+    const num = v => Number(v || 0);
+    const findings = [];
+    if (num(f.mv_failed))     findings.push({ k: 'movie failed',        n: num(f.mv_failed),     sev: 'FAIL' });
+    if (num(r.rung_failed))   findings.push({ k: 'rung failed',         n: num(r.rung_failed),   sev: 'FAIL' });
+    if (num(d.not_ok))        findings.push({ k: 'delivery unconfirmed',n: num(d.not_ok),        sev: 'FAIL' });
+    if (num(d.wit_bad))       findings.push({ k: 'vimeo not verified',  n: num(d.wit_bad),       sev: 'FAIL' });
+    if (num(d.wit_pending))   findings.push({ k: 'vimeo never answered', n: num(d.wit_pending),   sev: 'CHECK' });
+    if (num(a.aud_failed))    findings.push({ k: 'audio gate failed',   n: num(a.aud_failed),    sev: 'FAIL' });
+    if (num(dup.n))           findings.push({ k: 'duplicate audio',     n: num(dup.n),           sev: 'CHECK' });
+    if (num(d.wit_nodrift))   findings.push({ k: 'no drift figure',     n: num(d.wit_nodrift),   sev: 'CHECK' });
+    if (num(a.aud_old))       findings.push({ k: 'old audio probe',     n: num(a.aud_old),       sev: 'CHECK' });
+    if (num(d.retried))       findings.push({ k: 'upload retried',      n: num(d.retried),       sev: 'CHECK' });
+
+    let verdict = 'PASS';
+    if (findings.some(x => x.sev === 'CHECK')) verdict = 'CHECK';
+    if (findings.some(x => x.sev === 'FAIL'))  verdict = 'FAIL';
+    return { verdict: verdict, findings: findings };
+  }
+
+  // VERDICT FOR EVERY RUN AT ONCE - one database open, whatever the run count.
+  if (req.url === '/api/verdicts') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    let R = null;
+    try {
+      R = require('/root/build/lib/record.js');
+      const out = {};
+      for (const run of R.query('SELECT run_id, run_number, status, finished_at FROM runs', [])) {
+        const v = runVerdict(R, run.run_id);
+        out[run.run_number] = { verdict: v.verdict, findings: v.findings,
+                                status: run.status, finished: !!run.finished_at };
+      }
+      R.close();
+      return res.end(JSON.stringify({ ok: true, verdicts: out }));
+    } catch (e) {
+      try { if (R) R.close(); } catch (e2) {}
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // RUN REPORT. Reads the RECORD, not memory - the two disagreeing is the
+  // whole reason this exists. MEASURED 2026-08-20: run 13 read COMPLETE in
+  // memory and RUNNING in the record; two movies read DONE in memory and
+  // UPLOADING in the record. A report drawn from memory alone would have
+  // shown a confident green.
+  // Read-only, closed after every request, and it refuses rather than throws.
+  if (req.url.indexOf('/api/report/') === 0) {
+    const runNum = Number(decodeURIComponent(req.url.slice(12).split('?')[0]));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    if (!isFinite(runNum) || runNum <= 0) {
+      return res.end(JSON.stringify({ ok: false, error: 'bad run number' }));
+    }
+    let R = null;
+    try {
+      R = require('/root/build/lib/record.js');
+      const run = R.query('SELECT * FROM runs WHERE run_number = ?', [runNum])[0];
+      if (!run) {
+        R.close();
+        return res.end(JSON.stringify({ ok: false, error: 'run ' + runNum + ' not in record' }));
+      }
+      const rid = run.run_id;
+      const out = {
+        ok: true,
+        run: run,
+        items_by_phase: R.query(
+          'SELECT phase, COUNT(*) AS cnt FROM movies WHERE run_id=? GROUP BY phase', [rid]),
+        items_with_error: R.query(
+          "SELECT source_name, phase, error FROM movies WHERE run_id=? AND error IS NOT NULL AND error<>''", [rid]),
+        rungs_by_state: R.query(
+          'SELECT r.codec, r.height, r.state, COUNT(*) AS cnt FROM rungs r ' +
+          'JOIN movies m ON m.item_id=r.item_id WHERE m.run_id=? ' +
+          'GROUP BY r.codec, r.height, r.state', [rid]),
+        deliveries: R.query(
+          'SELECT d.destination, d.ok, d.witness_state, COUNT(*) AS cnt FROM deliveries d ' +
+          'JOIN rungs r ON r.rung_id=d.rung_id JOIN movies m ON m.item_id=r.item_id ' +
+          'WHERE m.run_id=? GROUP BY d.destination, d.ok, d.witness_state', [rid]),
+        deliveries_dirty: R.query(
+          'SELECT m.source_name, d.destination, d.ok, d.attempts, d.witness_state, ' +
+          'd.witness_drift_s, d.error FROM deliveries d JOIN rungs r ON r.rung_id=d.rung_id ' +
+          'JOIN movies m ON m.item_id=r.item_id WHERE m.run_id=? AND ' +
+          "(d.ok IS NOT 1 OR d.attempts > 1 OR (d.error IS NOT NULL AND d.error<>''))", [rid]),
+        witness: R.query(
+          'SELECT COUNT(*) AS n, ' +
+          "SUM(CASE WHEN d.witness_state='VERIFIED' THEN 1 ELSE 0 END) AS verified, " +
+          'SUM(CASE WHEN d.witness_drift_s IS NULL THEN 1 ELSE 0 END) AS drift_missing, ' +
+          'MAX(d.witness_drift_s) AS drift_max FROM deliveries d ' +
+          'JOIN rungs r ON r.rung_id=d.rung_id JOIN movies m ON m.item_id=r.item_id ' +
+          "WHERE m.run_id=? AND d.destination='vimeo'", [rid]),
+        audio: R.query(
+          'SELECT COUNT(*) AS n, ' +
+          'SUM(CASE WHEN q.audio_ok=1 THEN 1 ELSE 0 END) AS passed, ' +
+          'SUM(CASE WHEN q.flat_max IS NULL THEN 1 ELSE 0 END) AS unmeasurable, ' +
+          'MIN(q.rms_min_db) AS rms_min, MAX(q.rms_max_db) AS rms_max, ' +
+          'MAX(q.imbalance_db) AS imb_max, MAX(q.flat_max) AS flat_max ' +
+          'FROM quality q JOIN movies m ON m.item_id=q.item_id WHERE m.run_id=?', [rid]),
+        audio_rows: R.query(
+          'SELECT m.source_name, q.audio_ok, q.channels, q.peak_max_db, q.rms_min_db, ' +
+          'q.rms_max_db, q.imbalance_db, q.flat_max, q.audio_failed, q.sheets_uploaded ' +
+          'FROM quality q JOIN movies m ON m.item_id=q.item_id WHERE m.run_id=? ' +
+          'ORDER BY q.imbalance_db DESC', [rid]),
+        // Per-movie rung tallies. A movie that owed nothing reads 0 stored and
+        // >0 exists; one that did work reads the inverse. [MEASURED 2026-08-20,
+        // run 13: 2 and 14, nothing in between.] This is what lets the report
+        // say "skipped, already at its destinations" instead of "still mid-phase".
+        per_movie: R.query(
+          'SELECT m.source_name, m.phase, ' +
+          "SUM(CASE WHEN r.state='EXISTS'  THEN 1 ELSE 0 END) AS n_exists, " +
+          "SUM(CASE WHEN r.state='STORED'  THEN 1 ELSE 0 END) AS n_stored, " +
+          "SUM(CASE WHEN r.state='SKIPPED' THEN 1 ELSE 0 END) AS n_skipped, " +
+          "SUM(CASE WHEN r.state='FAILED'  THEN 1 ELSE 0 END) AS n_failed " +
+          'FROM movies m LEFT JOIN rungs r ON r.item_id=m.item_id ' +
+          'WHERE m.run_id=? GROUP BY m.item_id, m.source_name, m.phase', [rid]),
+        bands: R.query(
+          'SELECT r.codec, r.height, COUNT(*) AS cnt, MIN(r.pct_of_cap) AS lo, ' +
+          'MAX(r.pct_of_cap) AS hi FROM rungs r JOIN movies m ON m.item_id=r.item_id ' +
+          'WHERE m.run_id=? AND r.pct_of_cap IS NOT NULL GROUP BY r.codec, r.height', [rid])
+      };
+      R.close();
+      return res.end(JSON.stringify(out));
+    } catch (e) {
+      try { if (R) R.close(); } catch (e2) {}
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
   if (req.url === '/api/state') {
     let body;
     try { body = fs.readFileSync(st.STATE, 'utf8'); }
     catch (e) { body = JSON.stringify(state); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(body);
+  }
+  // The jobs panel. Served the same way as the run card - a file off disk, no
+  // framework, no build step. Two pages, two branches.
+  if (req.url === '/jobs' || req.url.indexOf('/jobs?') === 0) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(fs.readFileSync('/root/build/public/scheduler.html'));
   }
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(fs.readFileSync(PAGE));

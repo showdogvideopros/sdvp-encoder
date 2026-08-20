@@ -30,6 +30,11 @@ main{padding:22px;max-width:1400px;margin:0 auto}
 .c-FAILED{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
 .phase{font-size:17px;font-weight:600;letter-spacing:.08em;padding:6px 14px;border-radius:5px;background:#e2e8e7;color:#46605e;display:inline-block;vertical-align:middle}
 .phase.QUEUED{background:#e2e8e7;color:#46605e}
+/* UNSTARTED: a stopped run's films that will never run. Deliberately NOT the
+   same grey as QUEUED - queued means "waiting to start", and these never will.
+   Struck through so the eye reads "cancelled", not "pending". */
+.phase.UNSTARTED{background:#efe6ee;color:#6b4a66;text-decoration:line-through;
+                 text-decoration-thickness:1px}
 .phase.FETCHING{background:#f7e6b0;color:#6b5310}
 .phase.PROBING{background:#f2d98a;color:#6b5310}
 .phase.PLANNING{background:#ecc95f;color:#5c4708}
@@ -53,6 +58,32 @@ table.r th{color:#2c4a48;font-weight:400;font-size:16px}
 .qlab{font-size:15px;color:#4d6462;text-align:center;margin-top:3px}
 .qbtn{font-family:inherit;font-size:17px;padding:7px 15px;border-radius:16px;border:1px solid #b6dcc0;background:#e3f3e6;color:#1d6b33;cursor:pointer}
 .qbtn.bad{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
+.qbtn.warn{background:#fdf3d6;color:#8a6d10;border-color:#eddba1}
+.rbtn{font-family:inherit;font-size:17px;padding:6px 16px;border-radius:16px;border:1px solid;cursor:pointer;margin-left:14px;vertical-align:middle;letter-spacing:.04em}
+.rbtn.pass{background:#e3f3e6;color:#1d6b33;border-color:#b6dcc0}
+.rbtn.warn{background:#fdf3d6;color:#8a6d10;border-color:#eddba1}
+.rbtn.fail{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
+.rbtn:hover{border-color:var(--teal)}
+.hbtn{font-family:inherit;font-size:15px;font-weight:600;letter-spacing:.09em;padding:6px 15px;
+      border-radius:16px;border:1px solid;cursor:pointer;margin-left:8px}
+.hbtn.stop{background:#fdf3d6;color:#8a6d10;border-color:#eddba1}
+.hbtn.abort{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
+.hbtn:hover{filter:brightness(.95)}
+.hbtn[disabled]{opacity:.45;cursor:default}
+.cbtn{font-family:inherit;font-size:17px;padding:9px 20px;border-radius:18px;border:1px solid;
+      cursor:pointer;margin-right:12px}
+.cbtn.go{background:#fbe4e4;color:#96231f;border-color:#efbdbb}
+.cbtn.no{background:#e2e8e7;color:#46605e;border-color:#d8e2e0}
+table.rep{width:100%;border-collapse:collapse;font-size:17px}
+table.rep td,table.rep th{padding:10px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+table.rep th{color:#2c4a48;font-weight:400;font-size:16px}
+.vd{font-size:15px;font-weight:600;letter-spacing:.07em;padding:4px 11px;border-radius:5px;display:inline-block;white-space:nowrap}
+.vd.PASS{background:#e3f3e6;color:#1d6b33}
+.vd.CHECK{background:#fdf3d6;color:#8a6d10}
+.vd.FAIL{background:#fbe4e4;color:#96231f}
+.vd.NA{background:#e2e8e7;color:#46605e}
+.fix{font-size:15px;color:#4d6462;margin-top:5px;line-height:1.45}
+.dup{background:#fdf3d6}
 .qbtn:hover{border-color:var(--teal)}
 #sdvpModal{position:fixed;inset:0;background:rgba(10,49,48,.82);display:none;align-items:center;justify-content:center;padding:26px;z-index:99}
 #sdvpModal.on{display:flex}
@@ -65,6 +96,10 @@ table.r th{color:#2c4a48;font-weight:400;font-size:16px}
   <h1>SDVP Encoder</h1>
   <span class="sp"></span>
   <span class="ctl"><span class="dot" id="dot"></span><span id="stamp">—</span></span>
+  <span class="ctl" id="stopwrap" style="display:none">
+    <button class="hbtn stop"  id="btnStop"  onclick="askStop(false)">STOP</button>
+    <button class="hbtn abort" id="btnAbort" onclick="askStop(true)">ABORT</button>
+  </span>
   <span class="ctl">refresh
     <select id="iv">
       <option value="1000">1s</option>
@@ -78,6 +113,11 @@ table.r th{color:#2c4a48;font-weight:400;font-size:16px}
 <div id="sdvpModal"><div id="sdvpBox"><button id="sdvpClose">close</button><h3 id="sdvpTitle"></h3><div id="sdvpBody"></div></div></div>
 <script>
 var timer=null;
+var LAST=null;
+// Verdicts come from the daemon, computed in ONE place from the record, so the
+// button and the report can never disagree. Null until the first fetch lands;
+// a button with no verdict renders neutral rather than guessing.
+var VERDICTS=null;   // newest state the page fetched; the run report compares against it
 function fmt(s){if(s==null)return'—';if(s<90)return s.toFixed(0)+'s';return (s/60).toFixed(1)+' min';}
 function mb(b){if(b==null)return'—';return b>=1e9?(b/1e9).toFixed(2)+' GB':(b/1e6).toFixed(1)+' MB';}
 function esc(t){return String(t==null?'':t).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
@@ -130,6 +170,22 @@ function card(it){
   return h+'</div>';
 }
 function draw(s){
+  LAST=s;   // the report compares the record against exactly this snapshot
+  // The stop controls exist only while a run is in flight. A stop button with
+  // nothing to stop is clutter, and clutter in that corner trains the eye to
+  // skip it - which is the last thing wanted in an emergency.
+  (function(){
+    var live=(s.runs||[])[0];
+    var running=!!(live && !live.finished_at);
+    var w=document.getElementById('stopwrap');
+    if(w)w.style.display=running?'':'none';
+    var up=running && (live.items||[]).some(function(x){return x.phase==='UPLOADING';});
+    var ab=document.getElementById('btnAbort');
+    if(ab){
+      ab.disabled=up;
+      ab.title=up?'An upload is in flight - it must finish first. Use STOP.':'';
+    }
+  })();
   var m=document.getElementById('main');
   document.getElementById('stamp').textContent=new Date(s.updated_at).toLocaleTimeString();
   var runs=s.runs||[];
@@ -144,7 +200,7 @@ function draw(s){
       var mins=(endMs-new Date(r.started_at).getTime())/60000;
       if(mins>=0)rel=(mins<90?mins.toFixed(0)+' min':(mins/60).toFixed(1)+' h')+(r.finished_at?'':' so far');
     }
-    var rtime=rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:'');var all=(r.items||[]);var nDone=all.filter(function(x){return x.phase==='DONE';}).length;var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;var tally=all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+tally+' \u00b7 '+rtime+' \u00b7 '+esc(r.status)+'</div>';
+    var rtime=rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:'');var all=(r.items||[]);var nDone=all.filter(function(x){return x.phase==='DONE';}).length;var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;var tally=all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+tally+' \u00b7 '+rtime+' \u00b7 '+esc(r.status)+repBtn(r)+'</div>';
     var items=(r.items||[]).slice();
     var DONE={DONE:1,FAILED:1};
     function bucket(it){ if(it.phase==='QUEUED') return 1; if(DONE[it.phase]) return 2; return 0; }
@@ -195,9 +251,246 @@ document.getElementById('sdvpModal').addEventListener('click',function(e){
 (function(){var mo=document.getElementById('sdvpModal');
  if(mo&&mo.addEventListener)mo.addEventListener('keydown',function(e){
    if(e.key==='Escape')closeModal();});})();
+// ---- STOP AND ABORT --------------------------------------------------
+// STOP  finishes the film in flight completely, then halts.
+// ABORT kills the daemon now; recovery reads the flag and does NOT re-queue.
+// An upload in flight always completes - the daemon REFUSES an abort during
+// one and says so, rather than leaving a truncated file under a trusted name.
+// No browser dialogs anywhere: confirmation is a modal in the SDVP palette.
+function askStop(abort){
+  var t=abort?'ABORT this run?':'Stop after the current file?';
+  var body=abort
+    ? '<div class="reason" style="font-size:18px;line-height:1.55">This stops everything <b>now</b>. '
+      +'The film being worked on is abandoned and its partial output discarded. '
+      +'The job will <b>not</b> resume - if you want the rest, build a new job.<br><br>'
+      +'If a file is uploading, this will be refused: that upload has to finish so nothing '
+      +'truncated is left at the destination.</div>'
+    : '<div class="reason" style="font-size:18px;line-height:1.55">The film being worked on '
+      +'finishes completely - encode, upload, record. Then the run halts and nothing further '
+      +'starts.<br><br>There is no resume. If you want the remaining films later, build a new job.</div>';
+  body+='<div style="margin-top:22px">'
+    +'<button class="cbtn go" onclick="doStop('+(abort?'true':'false')+')">'
+    +(abort?'ABORT NOW':'STOP AFTER THIS FILE')+'</button>'
+    +'<button class="cbtn no" onclick="closeModal()">cancel</button></div>';
+  openModal(t,body);
+}
+function doStop(abort){
+  openModal(abort?'ABORT':'STOP','<div class="meta">asking the daemon\u2026</div>');
+  fetch(abort?'/api/abort':'/api/stop',{cache:'no-store'})
+   .then(function(r){return r.json();})
+   .then(function(j){
+     if(j.ok){
+       openModal(j.mode==='ABORT'?'Aborting':'Stopping',
+         '<div class="reason" style="font-size:18px">'+esc(j.message)+'</div>');
+     } else {
+       openModal('Not done','<div class="err" style="font-size:17px;line-height:1.5">'
+         +esc(j.error)+'</div>');
+     }
+   })
+   .catch(function(e){
+     // An ABORT kills the daemon, so the reply may never arrive. That is the
+     // button working, not failing.
+     openModal(abort?'Aborting':'Stopping',
+       '<div class="reason" style="font-size:18px">'
+       +(abort?'The daemon stopped before it could answer. That is expected on an abort.'
+              :'No answer from the daemon: '+esc(e.message))+'</div>');
+   });
+}
+
+// ---- RUN REPORT ------------------------------------------------------
+// Reads the RECORD via /api/report/<n>, not this page's live state. The two
+// disagreeing is the whole reason it exists: on 2026-08-20 run 13 read
+// COMPLETE here and RUNNING in the record, and two movies read DONE here and
+// UPLOADING there. A report drawn from this page's own data would have shown
+// a confident green.
+function repBtn(r){
+  if(r.run_number==null)return'';
+  var v=VERDICTS?VERDICTS[r.run_number]:null;
+  if(!v)return '<button class="rbtn" style="background:#e2e8e7;color:#46605e;border-color:#d8e2e0" '
+    +'onclick="showReport('+r.run_number+')">RUN REPORT</button>';
+  var cls=v.verdict==='FAIL'?'fail':(v.verdict==='CHECK'?'warn':'pass');
+  var n=(v.findings||[]).length;
+  var lab='RUN REPORT'+(n?' \u00b7 '+n:'');
+  return '<button class="rbtn '+cls+'" onclick="showReport('+r.run_number+')">'+lab+'</button>';
+}
+function n0(v){return v==null?0:Number(v);}
+function vchip(v){return '<span class="vd '+v+'">'+v+'</span>';}
+function repRow(label,verdict,evidence,fix){
+  return '<tr><td style="white-space:nowrap">'+esc(label)+'</td><td>'+vchip(verdict)+'</td>'
+    +'<td>'+evidence+(fix?'<div class="fix">'+fix+'</div>':'')+'</td></tr>';
+}
+function showReport(num){
+  openModal('Run #'+num+' report','<div class="meta">reading the record\u2026</div>');
+  fetch('/api/report/'+num,{cache:'no-store'}).then(function(x){return x.json();}).then(function(j){
+    if(!j.ok){openModal('Run #'+num+' report','<div class="err">'+esc(j.error)+'</div>');return;}
+    openModal('Run #'+num+' report',buildReport(j,num));
+  }).catch(function(e){
+    openModal('Run #'+num+' report','<div class="err">could not read the record: '+esc(e.message)+'</div>');
+  });
+}
+function buildReport(j,num){
+  var run=j.run||{};
+  // LAST is null until the first fetch lands. Guard it: a report opened before
+  // then must still render from the record alone, minus the comparison row.
+  var live=null;
+  if(LAST&&LAST.runs&&LAST.runs.forEach){
+    LAST.runs.forEach(function(r){if(Number(r.run_number)===Number(num))live=r;});
+  }
+  var inFlight=!run.finished_at;
+  var h='';
+  if(inFlight){
+    h+='<div class="reason" style="background:#fdf3d6;color:#8a6d10;padding:11px 14px;border-radius:6px;margin-bottom:14px">'
+      +'This run is still in flight. Rows that read CHECK because work is not finished yet are expected, not faults. '
+      +'The rows worth reading mid-run are AUDIO and BITRATE \u2014 a defect there repeats on every remaining movie.</div>';
+  }
+  h+='<table class="rep"><tr><th style="width:150px">what</th><th style="width:90px">state</th><th>evidence, and what to do</th></tr>';
+
+  // ITEMS
+  var ph={};(j.items_by_phase||[]).forEach(function(x){ph[x.phase]=x.cnt;});
+  var nDone=n0(ph.DONE),nFail=n0(ph.FAILED),nTot=0;
+  Object.keys(ph).forEach(function(k){nTot+=n0(ph[k]);});
+  var other=nTot-nDone-nFail;
+  var liveDone=live?(live.items||[]).filter(function(x){return x.phase==='DONE';}).length:null;
+  // A movie that owed nothing has EVERY rung already at its destinations and
+  // NONE stored. A movie that did work has the inverse. [MEASURED 2026-08-20,
+  // run 13: 2 movies 6-exists/0-stored, 14 movies 0-exists/6-stored, nothing
+  // in between.] Counting them apart stops "already there" reading as "stalled".
+  var nPre=0;
+  (j.per_movie||[]).forEach(function(x){ if(n0(x.n_stored)===0 && n0(x.n_exists)>0) nPre++; });
+  var stalled=other-nPre; if(stalled<0)stalled=0;
+  var v=nFail?'FAIL':(stalled?'CHECK':'PASS');
+  h+=repRow('items',v,
+    nTot+' in the record \u00b7 '+(nDone)+' encoded'
+      +(nPre?' \u00b7 '+nPre+' skipped, already at their destinations':'')
+      +(nFail?' \u00b7 <b>'+nFail+' failed</b>':'')
+      +(stalled?' \u00b7 <b>'+stalled+' still mid-phase</b>':''),
+    nFail?'A movie failed outright. Open its card for the reason, then re-run that show with on_existing set to skip \u2014 finished movies will not be redone.'
+    :(stalled?'Movies are still working, or their finished state was never written down. If the run has ended, check the movie cards \u2014 if they read DONE there but not here, the record write was missed.'
+    :(nPre?'The skipped movies were found already present at every destination they owed, so nothing was re-encoded or re-uploaded. Confirm them in your pCloud folder or Vimeo project listing if you want to see them.':'')));
+
+  // RECORD vs LIVE
+  if(live){
+    var agree=(liveDone===nDone)&&(String(live.status)===String(run.status));
+    h+=repRow('record vs page',agree?'PASS':'CHECK',
+      'page: '+liveDone+' done, '+esc(live.status)+' \u00b7 record: '+nDone+' done, '+esc(run.status),
+      agree?'':'The daemon\u2019s own view and the stored record disagree. The files themselves are usually fine \u2014 it is the bookkeeping that is behind. Worth reporting; nothing to re-run.');
+  }
+
+  // RUNGS
+  var rs={},rFail=0,rTot=0;
+  (j.rungs_by_state||[]).forEach(function(x){rs[x.state]=n0(rs[x.state])+n0(x.cnt);rTot+=n0(x.cnt);if(x.state==='FAILED')rFail+=n0(x.cnt);});
+  var rungTxt=Object.keys(rs).sort().map(function(k){return n0(rs[k])+' '+k.toLowerCase();}).join(' \u00b7 ');
+  h+=repRow('rungs',rFail?'FAIL':(rTot?'PASS':'CHECK'),rTot+' outputs \u00b7 '+rungTxt,
+    rFail?'One or more outputs failed encoding or verification. The movie card names which rung and why. Re-run the show; only the failed rungs will be redone.'
+    :(rTot?'':'No outputs recorded yet.'));
+
+  // DELIVERIES
+  var pc={ok:0,bad:0},vi={ok:0,bad:0};
+  (j.deliveries||[]).forEach(function(d){
+    var t=(d.destination==='vimeo')?vi:pc;
+    if(Number(d.ok)===1)t.ok+=n0(d.cnt);else t.bad+=n0(d.cnt);});
+  h+=repRow('pCloud',pc.bad?'FAIL':(pc.ok?'PASS':'NA'),
+    pc.ok+' files stored and checksum-verified'+(pc.bad?' \u00b7 <b>'+pc.bad+' not confirmed</b>':''),
+    pc.bad?'A file did not confirm at pCloud. Check the folder yourself; if the file is missing, re-run the show \u2014 existing files are skipped.':'');
+
+  var w=(j.witness||[])[0]||{};
+  var wn=n0(w.n),wver=n0(w.verified),wmiss=n0(w.drift_missing);
+  var vv=(vi.bad||wver<wn)?'FAIL':(wn===0?'NA':(wmiss?'CHECK':'PASS'));
+  h+=repRow('Vimeo',vv,
+    wn?(wver+' of '+wn+' confirmed by Vimeo\u2019s own duration'+(wmiss?' \u00b7 <b>'+wmiss+' carry no drift figure</b>':' \u00b7 worst drift '+(w.drift_max==null?'\u2014':w.drift_max+'s'))):'nothing sent to Vimeo',
+    (wver<wn&&wn)?'Vimeo never confirmed a file, or its duration did not match. Open the movie in Vimeo and play it. If it is short or missing, re-run that show.'
+    :(wmiss?'These were verified by code that did not keep the drift number. The verdict stands but the evidence behind it was discarded \u2014 fixed 20 Aug, so runs from then on carry the figure.':''));
+
+  // AUDIO
+  var a=(j.audio||[])[0]||{};
+  var an=n0(a.n),apass=n0(a.passed),aun=n0(a.unmeasurable);
+  // A movie that was never probed is UNMEASURED, not FAILED. Only a movie with
+  // a recorded audio verdict of 0 has actually failed a gate. Conflating the two
+  // teaches the reader to discount red, which is the one thing a report must
+  // never do.
+  // Count each movie ONCE. A never-probed movie has flat_max NULL too, so the
+  // endpoint's "unmeasurable" tally overlaps "not probed" and the two would be
+  // reported twice in the same sentence.
+  var aFail=0,aNone=0,aOld=0;
+  (j.audio_rows||[]).forEach(function(r){
+    if(r.audio_ok==null){aNone++;return;}
+    if(r.audio_ok===0)aFail++;
+    if(r.flat_max==null)aOld++;});
+  aun=aOld;
+  var av=aFail?'FAIL':((aun||aNone)?'CHECK':(an?'PASS':'NA'));
+  h+=repRow('audio',av,
+    an?(apass+' passed'
+        +(aFail?' \u00b7 <b>'+aFail+' failed a gate</b>':'')
+        +(aNone?' \u00b7 '+aNone+' not probed (nothing was encoded)':'')
+        +(aun?' \u00b7 <b>'+aun+' measured by the old probe</b>':
+          ' \u00b7 RMS '+(a.rms_min==null?'\u2014':a.rms_min.toFixed(1))+' to '+(a.rms_max==null?'\u2014':a.rms_max.toFixed(1))
+          +' dB \u00b7 worst imbalance '+(a.imb_max==null?'\u2014':a.imb_max+' dB'))):'no audio measured',
+    aFail?'A movie failed a gated audio check \u2014 a dead channel, a silent channel, or sustained flatness. Play the master before re-encoding; the fault is usually in the source.'
+    :(aun?'Measured before 20 Aug, when the probe shared a pass with the contact sheet and under-read long files by up to 22 dB. These numbers are not trustworthy and must not be used to set thresholds. The files themselves were never affected.'
+    :(aNone?'Not a fault. These movies were already present at their destinations, so nothing was encoded and there was nothing to measure.':'')));
+
+  // AUDIO ROWS with duplicate detection
+  if((j.audio_rows||[]).length){
+    var seen={},dups={};
+    j.audio_rows.forEach(function(r){
+      if(r.rms_max_db==null)return;
+      var k=r.rms_max_db+'|'+r.rms_min_db;
+      if(seen[k])dups[k]=1;seen[k]=1;});
+    var ndup=Object.keys(dups).length;
+    h+='</table>';
+    h+='<div class="meta" style="margin-top:20px;font-size:19px;color:#15302f">audio, movie by movie'
+      +(ndup?' \u2014 <span style="color:#8a6d10">identical readings found on different movies</span>':'')+'</div>';
+    if(ndup)h+='<div class="fix" style="margin-bottom:8px">Two movies of different lengths cannot measure identically. A repeated row means the probe reported on something other than that movie. Highlighted below.</div>';
+    h+='<table class="rep"><tr><th>movie</th><th>RMS</th><th>peak</th><th>imbalance</th><th>flat</th><th>sheets</th></tr>';
+    j.audio_rows.forEach(function(r){
+      var k=r.rms_max_db+'|'+r.rms_min_db;
+      var cls=(r.rms_max_db!=null&&dups[k])?' class="dup"':'';
+      h+='<tr'+cls+'><td>'+esc(r.source_name)+'</td>'
+        +'<td>'+(r.rms_min_db==null?'\u2014':r.rms_min_db.toFixed(2)+' / '+r.rms_max_db.toFixed(2))+'</td>'
+        +'<td>'+(r.peak_max_db==null?'\u2014':r.peak_max_db.toFixed(2))+'</td>'
+        +'<td>'+(r.imbalance_db==null?'\u2014':r.imbalance_db+' dB')+'</td>'
+        +'<td>'+(r.flat_max==null?'<span style="color:#8a6d10">not kept</span>':r.flat_max)+'</td>'
+        +'<td>'+n0(r.sheets_uploaded)+'</td></tr>';});
+    h+='</table><table class="rep">';
+  }
+
+  // BITRATE BANDS
+  var bands=j.bands||[];
+  h+=repRow('bitrate',bands.length?'PASS':'NA',
+    bands.length?bands.map(function(b){return b.codec+' '+b.height+'p '+(b.lo==null?'\u2014':b.lo.toFixed(0))+'\u2013'+(b.hi==null?'\u2014':b.hi.toFixed(0))+'%';}).join(' \u00b7 '):'nothing measured',
+    bands.length?'Percentages are each rung\u2019s share of its own ceiling. A rung outside its band fails at encode time, so a number here means it passed. Very low figures across a whole run can mean a soft source.':'');
+
+  // SCRATCH
+  if(live){
+    var kept=(live.items||[]).filter(function(x){return x.scratch_retained;}).length;
+    h+=repRow('working files',kept?'FAIL':'PASS',
+      kept?('<b>'+kept+' movie(s) kept their working directory</b>'):'nothing left behind',
+      kept?'Scratch is only kept when something failed. The directory holds the part-finished files \u2014 leave it until the failure is understood, then it can be deleted.':'');
+  }
+
+  // DIRTY DELIVERIES
+  if((j.deliveries_dirty||[]).length){
+    h+=repRow('retries',(j.deliveries_dirty.length?'CHECK':'PASS'),
+      j.deliveries_dirty.length+' delivery(ies) needed more than one attempt or reported an error',
+      'Uploads that retried and then succeeded are not a fault, but a run full of them means the link or the vendor was struggling.');
+  }
+
+  h+='</table>';
+  h+='<div class="reason" style="margin-top:16px">Read from the stored record'
+    +(run.finished_at?(' \u00b7 run finished '+new Date(run.finished_at).toLocaleString()):' \u00b7 run not finished')
+    +' \u00b7 status '+esc(run.status||'\u2014')+'</div>';
+  return h;
+}
 function tick(){
-  fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();})
-   .then(draw).catch(function(){document.getElementById('stamp').textContent='no answer';});
+  // Verdicts first, then state. A verdicts failure must not stop the page
+  // drawing - the buttons simply render neutral until the next cycle.
+  fetch('/api/verdicts',{cache:'no-store'}).then(function(r){return r.json();})
+   .then(function(j){ if(j&&j.ok)VERDICTS=j.verdicts; })
+   .catch(function(){})
+   .then(function(){
+     return fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).then(draw);
+   })
+   .catch(function(){document.getElementById('stamp').textContent='no answer';});
 }
 function schedule(){
   if(timer)clearInterval(timer);
