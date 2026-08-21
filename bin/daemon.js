@@ -309,6 +309,53 @@ http.createServer((req, res) => {
     });
   }
 
+  // ---- MAKE A FOLDER ------------------------------------------------------
+  // Dr. K builds a job standing in the master folder, and the destination he
+  // wants often does not exist yet - "ABTC2026 JMDs" beside "encodes", or
+  // "hevc" for the 2027 ladder. Creating it from the browser is one step where
+  // leaving the panel would be several.
+  //
+  // GUARDED HARD, because this is the second WRITE surface on this box and the
+  // first one that creates something at a vendor. A name with a slash in it
+  // would silently make a nested tree; a name with a leading dot or a traversal
+  // would land somewhere nobody chose.
+  if (req.url === '/api/folder/new') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 1e5) req.destroy(); });
+    req.on('end', function () {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      let j;
+      try { j = JSON.parse(body || '{}'); }
+      catch (e) { return res.end(JSON.stringify({ ok: false, error: 'could not read the request' })); }
+      const parent = String(j.parent || '').trim();
+      const name = String(j.name || '').trim();
+      if (!parent || parent.charAt(0) !== '/')
+        return res.end(JSON.stringify({ ok: false, error: 'no parent folder given' }));
+      if (!name)
+        return res.end(JSON.stringify({ ok: false, error: 'the folder needs a name' }));
+      if (name.length > 80)
+        return res.end(JSON.stringify({ ok: false, error: 'that name is too long' }));
+      if (/[\/\\]/.test(name))
+        return res.end(JSON.stringify({ ok: false, error: 'a folder name cannot contain a slash' }));
+      if (name === '.' || name === '..' || name.charAt(0) === '.')
+        return res.end(JSON.stringify({ ok: false, error: 'a folder name cannot start with a dot' }));
+      if (/["'*?<>|]/.test(name))
+        return res.end(JSON.stringify({ ok: false, error: 'that name has characters pCloud will not accept' }));
+      const full = (parent === '/' ? '' : parent) + '/' + name;
+      const pc = require('/root/build/lib/pcloud.js');
+      return pc.createFolderIfNotExists(full).then(function (r) {
+        st.event({ kind: 'folder_created', path: full, created: !!(r && r.created) });
+        return res.end(JSON.stringify({ ok: true, path: full, name: name,
+          created: !!(r && r.created),
+          message: (r && r.created) ? 'Created.' : 'That folder already existed - using it.' }));
+      }).catch(function (e) {
+        return res.end(JSON.stringify({ ok: false,
+          error: pc.redact(String(e.message)).slice(0, 200) }));
+      });
+    });
+    return;
+  }
+
   // ---- HELD JOBS ----------------------------------------------------------
   if (req.url === '/api/held') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -394,6 +441,16 @@ http.createServer((req, res) => {
       batches.forEach(function (b, bi) {
         const where = 'batch ' + (bi + 1) + (b.label ? ' (' + b.label + ')' : '');
         if (!b.source_path) problems.push(where + ' has no source folder');
+        // THE DESTINATION OVERRIDE. buildRun uses it verbatim, so a typo here
+        // does not fail - it delivers a show to a folder nobody chose, or makes
+        // one under a misspelt name. It is refused at the door instead.
+        if (b.dest_path_override != null) {
+          const dp = String(b.dest_path_override);
+          if (!dp.trim()) problems.push(where + ': the destination folder is empty');
+          else if (dp.charAt(0) !== '/') problems.push(where + ': the destination must start at the top');
+          else if (dp.indexOf('..') !== -1) problems.push(where + ': that destination is not a real path');
+          else if (dp.length > 400) problems.push(where + ': that destination is too long');
+        }
         if (!(b.items || []).length) problems.push(where + ' has no files selected');
         (b.items || []).forEach(function (it) {
           if (!it.fileid) problems.push(where + ': "' + (it.name || '?') + '" has no file id');

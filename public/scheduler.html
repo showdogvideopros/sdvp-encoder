@@ -165,8 +165,28 @@ function editHeld(f){
      var job=j.job;
      document.getElementById('jobName').value=job.job_label||'';
      BATCHES=(job.batches||[]).map(function(b){
+       // RESTORE THE DESTINATION. [MEASURED 2026-08-21] the reload rebuilt a
+       // batch from its source, files and outputs and never read the override -
+       // so reopening a job pointed at a test folder, changing one film and
+       // saving, silently redirected it to 'encodes'. Nothing said so until the
+       // files landed in the wrong place.
+       //
+       // The stored value is a full path. When it sits directly under the
+       // source folder, the last segment IS the folder name and the strip shows
+       // it selected. When it points somewhere else entirely - as a
+       // hand-written job may - keep the whole path rather than guess, because
+       // a name lifted out of an unrelated path would be a confident lie.
+       var _src=String(b.source_path||'');
+       var _ov=b.dest_path_override?String(b.dest_path_override):null;
+       var _df='encodes';
+       if(_ov){
+         var _pre=(_src==='/'?'':_src)+'/';
+         _df=(_ov.indexOf(_pre)===0 && _ov.slice(_pre.length).indexOf('/')===-1)
+             ? _ov.slice(_pre.length) : _ov;
+       }
        return { id:uid(), path:b.source_path, files:(b.items||[]).slice(),
                 profile:profileFileMatching(b.outputs), outputs:JSON.parse(JSON.stringify(b.outputs||[])),
+                dest_folder:_df,
                 perfile:b._perfile||{} };
      });
      EDITING=f; BROWSING=null; drawBatches(); drawEditing();
@@ -410,6 +430,8 @@ function saveProfile(){
 
 // ---- INLINE BROWSER
 var BROWSE={path:'/',folders:[],files:[],loading:false};
+// NEW-FOLDER state, transient UI rather than part of a batch.
+var NEWF={open:false,name:'',busy:false,err:null};
 function browseFor(i){ BROWSING=i; var b=BATCHES[i]; go(b.path||'/'); }
 function go(p){
   BROWSE.loading=true; drawBatches();
@@ -441,6 +463,35 @@ function browserHtml(b,i){
     h+='<div class="row"><div class="nm dir" onclick="go(\''+esc(p.replace(/'/g,"\\'"))+'\')">&#128193; '+esc(f.name)+'</div></div>';
   });
   if(BROWSE.files.length){
+    // WHERE THE OUTPUT GOES, per batch. Dr. K's ruling 2026-08-21: some shows
+    // keep JMDs in with the movies, earlier shows separated them, and JMC
+    // arrives in the autumn wanting its own folder. Candidates are the folders
+    // already listed here, so picking an existing one cannot make a duplicate.
+    // 'encodes' is offered even when absent - the encoder creates it.
+    var curDest=b.dest_folder||'encodes';
+    var opts=['encodes'];
+    BROWSE.folders.forEach(function(f){ if(opts.indexOf(f.name)===-1)opts.push(f.name); });
+    if(opts.indexOf(curDest)===-1)opts.push(curDest);
+    h+='<div class="row" style="background:#eef3f2;border-left:3px solid var(--teal)">'
+      +'<div class="nm">&#128193; <b>files land in</b> &nbsp;'
+      +'<select onchange="setDest('+i+',this.value)" style="font-size:17px;padding:4px 8px">';
+    opts.forEach(function(o){
+      h+='<option value="'+esc(o)+'"'+(o===curDest?' selected':'')+'>'+esc(o)+'</option>';
+    });
+    h+='</select>'
+      +(curDest==='encodes'?' <span class="muted">\u2014 the usual sidecar folder</span>':'')
+      +'</div>'
+      +'<button class="btn" onclick="newFolderOpen()">new folder</button></div>';
+    if(NEWF.open){
+      h+='<div class="row" style="background:#f7f9f8">'
+        +'<div class="nm">new folder in <b>'+esc(BROWSE.path)+'</b> &nbsp;'
+        +'<input id="nfName" value="'+esc(NEWF.name)+'" placeholder="ABTC2026 JMDs" '
+        +'style="font-size:17px;padding:5px 9px;width:260px" oninput="NEWF.name=this.value"></div>'
+        +'<button class="btn pri"'+(NEWF.busy?' disabled':'')+' onclick="newFolderSave('+i+')">'
+        +(NEWF.busy?'creating\u2026':'create')+'</button>'
+        +'<button class="btn dim" onclick="newFolderCancel()">cancel</button></div>';
+      if(NEWF.err)h+='<div class="err" style="margin:6px 0">'+esc(NEWF.err)+'</div>';
+    }
     var allOn=BROWSE.files.every(function(f){return isPicked(b,f.fileid);});
     h+='<div class="row" style="background:#f2f7f6"><input type="checkbox" '+(allOn?'checked':'')
       +' onchange="pickAll('+i+',this.checked)"><div class="nm"><b>'+BROWSE.files.length+' file'
@@ -458,9 +509,28 @@ function browserHtml(b,i){
   h+='<div style="margin-top:13px"><button class="btn" onclick="doneBrowsing()">done choosing</button></div>';
   return h+'</div>';
 }
+function setDest(i,v){ BATCHES[i].dest_folder=v; drawBatches(); }
+function newFolderOpen(){ NEWF.open=true; NEWF.err=null; drawBatches(); }
+function newFolderCancel(){ NEWF.open=false; NEWF.name=''; NEWF.err=null; drawBatches(); }
+function newFolderSave(i){
+  var nm=String(NEWF.name||'').trim();
+  if(!nm){ NEWF.err='Give the folder a name.'; drawBatches(); return; }
+  NEWF.busy=true; NEWF.err=null; drawBatches();
+  fetch('/api/folder/new',{method:'POST',cache:'no-store',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({parent:BROWSE.path,name:nm})})
+   .then(function(r){return r.json();}).then(function(j){
+     NEWF.busy=false;
+     if(!j.ok){ NEWF.err=j.error||'Could not create that folder.'; drawBatches(); return; }
+     BATCHES[i].dest_folder=j.name;
+     NEWF.open=false; NEWF.name='';
+     go(BROWSE.path);
+   }).catch(function(){ NEWF.busy=false; NEWF.err='Could not reach the encoder.'; drawBatches(); });
+}
 function isPicked(b,fid){ return b.files.some(function(x){return Number(x.fileid)===Number(fid);}); }
 function pick(i,fid,name,on){
   var b=BATCHES[i];
+  if(b.dest_folder===undefined)b.dest_folder='encodes';
   if(on){ if(!isPicked(b,fid)){
       var meta=BROWSE.files.filter(function(x){return Number(x.fileid)===Number(fid);})[0]||{};
       b.files.push({fileid:fid,name:name,bytes:meta.size||0}); b.path=BROWSE.path; } }
@@ -486,7 +556,7 @@ function buildJob(){
     dest_subfolder:'encodes',
     batches:BATCHES.map(function(b){
       var p=profileOf(b);
-      return { label:(p?p.name:'batch'), source_path:b.path,
+      var _bo={ label:(p?p.name:'batch'), source_path:b.path,
                outputs:outputsOf(b),
                // CARRY THE SIZE. The panel knows it from the browse listing and
                // was discarding it. Without it the daemon has no byte count for
@@ -494,6 +564,14 @@ function buildJob(){
                // the run card could not project remaining time until every film
                // had already been fetched. [MEASURED 2026-08-20, run 30]
                items:b.files.map(function(f){return {fileid:f.fileid,name:f.name,bytes:f.bytes||0};}) };
+      // Written ONLY when it differs from the default, so a job using the usual
+      // sidecar produces a file identical to what the panel made before this.
+      if(b.dest_folder && b.dest_folder!=='encodes'){
+        _bo.dest_path_override=(String(b.dest_folder).charAt(0)==='/')
+          ? b.dest_folder
+          : ((b.path==='/'?'':b.path)+'/'+b.dest_folder);
+      }
+      return _bo;
     })
   };
 }
@@ -517,6 +595,9 @@ function review(){
     outputs+=per*b.items.length;
     h+='<div style="margin-top:18px"><b>batch '+(i+1)+' &middot; '+esc(b.label)+'</b>'
       +'<div class="muted">'+esc(b.source_path)+'</div>';
+    h+='<div class="muted">&#128193; files land in <b>'
+      +esc(b.dest_path_override||((b.source_path==='/'?'':b.source_path)+'/encodes'))
+      +'</b></div>';
     h+='<div style="margin:9px 0">';
     b.outputs.forEach(function(o){
       outWords(o).split('   ').forEach(function(w){
