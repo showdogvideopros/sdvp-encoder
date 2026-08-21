@@ -432,6 +432,13 @@ function saveProfile(){
 var BROWSE={path:'/',folders:[],files:[],loading:false};
 // NEW-FOLDER state, transient UI rather than part of a batch.
 var NEWF={open:false,name:'',busy:false,err:null};
+// DESTINATION BROWSER - a second browser, independent of the file browser.
+// [MEASURED 2026-08-21] the dropdown alone anchored the destination to wherever
+// the films were picked, so for a show whose Just My Dog masters live in their
+// own subfolder the only destinations on offer were subfolders OF THAT
+// SUBFOLDER - a nested 'encodes' inside the masters folder, chosen silently.
+// Dr. K's original spec was a browser from the top; this is it.
+var DESTB={open:false,batch:null,path:'/',folders:[],loading:false,err:null};
 function browseFor(i){ BROWSING=i; var b=BATCHES[i]; go(b.path||'/'); }
 function go(p){
   BROWSE.loading=true; drawBatches();
@@ -478,19 +485,41 @@ function browserHtml(b,i){
     opts.forEach(function(o){
       h+='<option value="'+esc(o)+'"'+(o===curDest?' selected':'')+'>'+esc(o)+'</option>';
     });
+    h+='<option value="__browse__">choose another folder\u2026</option>';
     h+='</select>'
       +(curDest==='encodes'?' <span class="muted">\u2014 the usual sidecar folder</span>':'')
       +'</div>'
       +'<button class="btn" onclick="newFolderOpen()">new folder</button></div>';
     if(NEWF.open){
       h+='<div class="row" style="background:#f7f9f8">'
-        +'<div class="nm">new folder in <b>'+esc(BROWSE.path)+'</b> &nbsp;'
+        +'<div class="nm">new folder in <b>'+esc(DESTB.open?DESTB.path:BROWSE.path)+'</b> &nbsp;'
         +'<input id="nfName" value="'+esc(NEWF.name)+'" placeholder="ABTC2026 JMDs" '
         +'style="font-size:17px;padding:5px 9px;width:260px" oninput="NEWF.name=this.value"></div>'
         +'<button class="btn pri"'+(NEWF.busy?' disabled':'')+' onclick="newFolderSave('+i+')">'
         +(NEWF.busy?'creating\u2026':'create')+'</button>'
         +'<button class="btn dim" onclick="newFolderCancel()">cancel</button></div>';
       if(NEWF.err)h+='<div class="err" style="margin:6px 0">'+esc(NEWF.err)+'</div>';
+    }
+    // THE DESTINATION BROWSER, drawn in place beneath the strip. The film
+    // selection above is untouched while it is open.
+    if(DESTB.open && DESTB.batch===i){
+      h+='<div style="background:#f7f9f8;border-left:3px solid var(--gold);padding:12px 14px;margin:2px 0">'
+        +'<div class="muted" style="margin-bottom:7px">choose where the output goes \u2014 anywhere in pCloud</div>'
+        +'<div class="crumb">'+destCrumbs(DESTB.path)+'</div>';
+      if(DESTB.loading){ h+='<div class="empty">reading pCloud\u2026</div>'; }
+      else if(DESTB.err){ h+='<div class="err">'+esc(DESTB.err)+'</div>'; }
+      else {
+        DESTB.folders.forEach(function(f){
+          var dp=(DESTB.path==='/'?'':DESTB.path)+'/'+f.name;
+          h+='<div class="row"><div class="nm dir" onclick="destGo(\''
+            +esc(dp.replace(/'/g,"\\'"))+'\')">&#128193; '+esc(f.name)+'</div></div>';
+        });
+        if(!DESTB.folders.length)h+='<div class="empty">no folders here</div>';
+      }
+      h+='<div style="margin-top:11px">'
+        +'<button class="btn pri" onclick="destUse('+i+')">put the files in '+esc(DESTB.path)+'</button> '
+        +'<button class="btn" onclick="newFolderOpen()">new folder here</button> '
+        +'<button class="btn dim" onclick="destCancel()">cancel</button></div></div>';
     }
     var allOn=BROWSE.files.every(function(f){return isPicked(b,f.fileid);});
     h+='<div class="row" style="background:#f2f7f6"><input type="checkbox" '+(allOn?'checked':'')
@@ -509,7 +538,42 @@ function browserHtml(b,i){
   h+='<div style="margin-top:13px"><button class="btn" onclick="doneBrowsing()">done choosing</button></div>';
   return h+'</div>';
 }
-function setDest(i,v){ BATCHES[i].dest_folder=v; drawBatches(); }
+function setDest(i,v){
+  if(v==='__browse__'){ destBrowseOpen(i); return; }
+  BATCHES[i].dest_folder=v; drawBatches();
+}
+function destBrowseOpen(i){
+  DESTB.open=true; DESTB.batch=i; DESTB.err=null; NEWF.open=false; NEWF.err=null;
+  // Start where the films are - the common destination is a sibling of the
+  // masters - but every folder from the top is one breadcrumb away.
+  destGo(BATCHES[i].path||'/');
+}
+function destGo(p){
+  DESTB.loading=true; drawBatches();
+  fetch('/api/browse?path='+encodeURIComponent(p),{cache:'no-store'})
+   .then(function(r){return r.json();}).then(function(j){
+     DESTB.loading=false;
+     if(!j.ok){ DESTB.err=j.error; drawBatches(); return; }
+     DESTB.err=null; DESTB.path=j.path; DESTB.folders=j.folders||[];
+     drawBatches();
+   }).catch(function(){ DESTB.loading=false; DESTB.err='Could not reach the encoder.'; drawBatches(); });
+}
+function destCrumbs(p){
+  var parts=String(p||'/').split('/').filter(Boolean);
+  var h='<a onclick="destGo(\'/\')">top</a>';
+  var acc='';
+  parts.forEach(function(seg){
+    acc+='/'+seg;
+    h+=' <span class="muted">/</span> <a onclick="destGo(\''+esc(acc.replace(/'/g,"\\'"))+'\')">'+esc(seg)+'</a>';
+  });
+  return h;
+}
+// A full path is stored, not a name. buildJob writes a value beginning with '/'
+// verbatim, and editHeld keeps a path outside the source folder whole - so a
+// destination chosen this way survives a save and a reopen.
+function destUse(i){ BATCHES[i].dest_folder=DESTB.path; destCancel(); }
+function destCancel(){ DESTB.open=false; DESTB.batch=null; NEWF.open=false; drawBatches(); }
+
 function newFolderOpen(){ NEWF.open=true; NEWF.err=null; drawBatches(); }
 function newFolderCancel(){ NEWF.open=false; NEWF.name=''; NEWF.err=null; drawBatches(); }
 function newFolderSave(i){
@@ -518,13 +582,13 @@ function newFolderSave(i){
   NEWF.busy=true; NEWF.err=null; drawBatches();
   fetch('/api/folder/new',{method:'POST',cache:'no-store',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({parent:BROWSE.path,name:nm})})
+    body:JSON.stringify({parent:(DESTB.open?DESTB.path:BROWSE.path),name:nm})})
    .then(function(r){return r.json();}).then(function(j){
      NEWF.busy=false;
      if(!j.ok){ NEWF.err=j.error||'Could not create that folder.'; drawBatches(); return; }
-     BATCHES[i].dest_folder=j.name;
      NEWF.open=false; NEWF.name='';
-     go(BROWSE.path);
+     if(DESTB.open){ BATCHES[i].dest_folder=j.path; destCancel(); }
+     else { BATCHES[i].dest_folder=j.name; go(BROWSE.path); }
    }).catch(function(){ NEWF.busy=false; NEWF.err='Could not reach the encoder.'; drawBatches(); });
 }
 function isPicked(b,fid){ return b.files.some(function(x){return Number(x.fileid)===Number(fid);}); }
