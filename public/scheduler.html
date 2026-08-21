@@ -116,10 +116,19 @@ function loadHeld(){
     var el=document.getElementById('heldList');
     if(!j.ok||!j.held.length){el.innerHTML='<div class="empty">nothing held</div>';return;}
     var h='';
+    // THE QUEUE TOTAL. One night or three days - that is the question this
+    // list has to answer before anything is released.
+    if(j.queue&&j.held.length>1){
+      h+='<div class="sum" style="margin-bottom:12px"><b>If you start everything: '
+        +esc(j.queue.range)+'</b> &nbsp;<span class="muted">\u2014 they run back to back, '
+        +'in the order they were built. Films already at their destination are skipped, '
+        +'so a queue with much in place finishes under the low end.</span></div>';
+    }
     j.held.forEach(function(x){
       h+='<div class="row"><div class="nm"><b>'+esc(x.label)+'</b>'
         +'<div class="muted">'+x.films+' file'+(x.films===1?'':'s')+' in '+x.batches+' batch'+(x.batches===1?'':'es')
-        +' &middot; built '+esc(dt(x.built_at))+'</div></div>'
+        +' &middot; built '+esc(dt(x.built_at))
+        +(x.estimate?' &middot; <b>'+esc(x.estimate.range)+'</b>':'')+'</div></div>'
         +'<button class="btn pri" onclick="release(\''+esc(x.file)+'\')">start</button>'
         +'<button class="btn" onclick="editHeld(\''+esc(x.file)+'\')">review &amp; edit</button>'
         +'<button class="btn dim" onclick="discard(\''+esc(x.file)+'\',\''+esc(x.label)+'\')">discard</button></div>';
@@ -536,7 +545,10 @@ function review(){
     var fl=[];
     BATCHES.forEach(function(b){
       var codecs=[]; outputsOf(b).forEach(function(o){ if(codecs.indexOf(o.codec)===-1)codecs.push(o.codec); });
-      b.files.forEach(function(f){ fl.push({bytes:f.bytes||0,codecs:codecs}); });
+      var rungs=[];
+      outputsOf(b).forEach(function(o){ (o.rungs||[]).forEach(function(hh){
+        rungs.push({codec:o.codec,height:hh}); }); });
+      b.files.forEach(function(f){ fl.push({bytes:f.bytes||0,codecs:codecs,rungs:rungs}); });
     });
     fetch('/api/estimate',{method:'POST',cache:'no-store',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({films:fl})})

@@ -314,14 +314,48 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     try {
       const dir = '/var/lib/sdvp-encoder/held';
+      // ESTIMATE EACH HELD JOB, AND THE QUEUE AS A WHOLE. Dr. K: the figure
+      // decides whether he is loading one night or three days, and that
+      // decision is made BEFORE anything is released - so it has to be here,
+      // on the waiting list, not only inside the review modal.
+      // The sizes are already in the job file; this endpoint was opening each
+      // one and reporting only a count.
+      const E = require('/root/build/lib/estimate.js');
+      const RT = E.rates();
+      let qTotal = 0, qAny = false;
       const out = fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
         const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
         const films = (j.batches || []).reduce((n, b) => n + ((b.items || []).length), 0);
+        let est = null;
+        try {
+          const fl = [];
+          for (const b of j.batches || []) {
+            const rungs = [];
+            for (const o of b.outputs || []) {
+              for (const h of o.rungs || []) rungs.push({ codec: o.codec, height: h });
+            }
+            for (const it of b.items || []) {
+              fl.push({ bytes: it.bytes || 0, rungs: rungs });
+            }
+          }
+          // A job whose films carry no size cannot be estimated honestly.
+          // Hand-written job files have no bytes; panel-built ones always do.
+          if (fl.length && fl.every(x => x.bytes > 0)) {
+            const e = E.estimate(fl, RT);
+            if (e.seconds > 0) {
+              est = { seconds: e.seconds, words: E.words(e.seconds), range: E.range(e),
+                      modelled: !!e.modelled };
+              qTotal += e.seconds; qAny = true;
+            }
+          }
+        } catch (e2) { est = null; }
         return { file: f, label: j.job_label, built_at: j.built_at || null,
                  batches: (j.batches || []).length, films: films,
-                 job_uid: j.job_uid || null };
+                 job_uid: j.job_uid || null, estimate: est };
       }).sort((a, b) => String(a.built_at).localeCompare(String(b.built_at)));
-      return res.end(JSON.stringify({ ok: true, held: out }));
+      const queue = qAny ? { seconds: qTotal, words: E.words(qTotal),
+                             range: E.range({ low: qTotal * 0.85, high: qTotal * 1.25 }) } : null;
+      return res.end(JSON.stringify({ ok: true, held: out, queue: queue }));
     } catch (e) {
       return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
     }
@@ -553,8 +587,21 @@ http.createServer((req, res) => {
   // reads amber from its first minute and the colour stops meaning anything.
   function runVerdict(R, rid) {
     const q1 = (s, p) => R.query(s, p)[0] || {};
+    // ⛔ A FILM HALTED BY THE OPERATOR IS NOT A FAILED FILM. [MEASURED
+    // 2026-08-21] runs 22, 28 and 34 all read FAIL for the single reason that
+    // a button was pressed; run 23 read PASS only because its film happened to
+    // finish before the stop landed. The colour was an accident of timing.
+    // Red is for work that did not happen. A deliberate halt is a decision,
+    // and teaching the reader to discount red is the one thing a report must
+    // never do - the same principle that made a stopped run read STOPPED
+    // rather than COMPLETE_WITH_FAILURES.
+    // A film that failed for a REAL reason inside a halted run still counts.
     const f = q1('SELECT ' +
-      "SUM(CASE WHEN m.phase='FAILED' THEN 1 ELSE 0 END) AS mv_failed, " +
+      "SUM(CASE WHEN m.phase='FAILED' " +
+      "         AND (m.error IS NULL OR m.error NOT LIKE '%by operator%') " +
+      '         THEN 1 ELSE 0 END) AS mv_failed, ' +
+      "SUM(CASE WHEN m.phase='FAILED' " +
+      "         AND m.error LIKE '%by operator%' THEN 1 ELSE 0 END) AS mv_halted, " +
       "SUM(CASE WHEN m.error IS NOT NULL AND m.error<>'' THEN 1 ELSE 0 END) AS mv_err " +
       'FROM movies m WHERE m.run_id=?', [rid]);
     const r = q1('SELECT ' +
@@ -606,6 +653,9 @@ http.createServer((req, res) => {
     const num = v => Number(v || 0);
     const findings = [];
     if (num(f.mv_failed))     findings.push({ k: 'movie failed',        n: num(f.mv_failed),     sev: 'FAIL' });
+    // CHECK, not FAIL - and it still appears, so a halted run is never silently
+    // green. It says what happened: you stopped it.
+    if (num(f.mv_halted))     findings.push({ k: 'halted by operator',  n: num(f.mv_halted),     sev: 'CHECK' });
     if (num(r.rung_failed))   findings.push({ k: 'rung failed',         n: num(r.rung_failed),   sev: 'FAIL' });
     if (num(d.not_ok))        findings.push({ k: 'delivery unconfirmed',n: num(d.not_ok),        sev: 'FAIL' });
     if (num(d.wit_bad))       findings.push({ k: 'vimeo not verified',  n: num(d.wit_bad),       sev: 'FAIL' });
