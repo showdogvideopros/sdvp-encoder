@@ -309,6 +309,131 @@ http.createServer((req, res) => {
     });
   }
 
+  // ---- PREFLIGHT ----------------------------------------------------------
+  // Dr. K, 2026-08-21: "A tired mind during production season may forget what
+  // was encoded yesterday. No need to do it twice."
+  //
+  // ADVISORY, NEVER BLOCKING - his ruling. A refusal at eleven at night, when
+  // he knows perfectly well the folder is fine, would be infuriating, and he is
+  // the one with the context. This reports; he decides.
+  //
+  // It asks the SAME questions the run will ask, in the same way: the pCloud
+  // half lists the DESTINATION FOLDER and matches filenames, exactly as
+  // processItem does. That is stronger than querying our own record - it also
+  // sees files encoded before this box existed, or moved by hand.
+  //
+  // ⛔ WHAT IT CANNOT KNOW: whether the top rung will be LINKED rather than
+  // encoded depends on the master's own codec and height, which needs a probe.
+  // It says so instead of guessing.
+  if (req.url === '/api/preflight') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 2e6) req.destroy(); });
+    req.on('end', async function () {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      let job;
+      try { job = JSON.parse(body || '{}'); }
+      catch (e) { return res.end(JSON.stringify({ ok: false, error: 'could not read the job' })); }
+
+      const pc = require('/root/build/lib/pcloud.js');
+      const P = require('/root/build/lib/planner.js');
+      const orch = require('/root/build/lib/orchestrator.js');
+      let R = null;
+      try { R = require('/root/build/lib/record.js'); } catch (e) { R = null; }
+
+      const out = { ok: true, batches: [], totals: { films: 0, missing_sources: 0,
+                    outputs: 0, present: 0, todo: 0, vimeo_unchecked: 0 } };
+      try {
+        for (const b of job.batches || []) {
+          const dest = b.dest_path_override ||
+                       ((b.source_path || '') + '/' + (job.dest_subfolder || 'encodes'));
+          const row = { label: b.label || '(batch)', source_path: b.source_path,
+                        dest_path: dest, dest_exists: false, films: (b.items || []).length,
+                        missing_sources: [], present: [], todo: 0, outputs: 0,
+                        top_rung_likely_linked: 0, note: null };
+
+          // The masters: ONE listing, matched on file id. A master renamed or
+          // moved since the job was built fails the run hours in; here it costs
+          // a second.
+          let srcNames = null;
+          try {
+            const se = await pc.listFolder(b.source_path);
+            srcNames = {};
+            for (const e of se) if (!e.isfolder) srcNames[String(e.fileid)] = e.name;
+          } catch (e) { row.note = 'could not read the source folder'; }
+          if (srcNames) {
+            for (const it of b.items || []) {
+              if (!srcNames[String(it.fileid)]) row.missing_sources.push(it.name || String(it.fileid));
+            }
+          }
+
+          // The destination, listed exactly as processItem lists it.
+          let destNames = [];
+          try {
+            const de = await pc.listFolder(dest);
+            row.dest_exists = true;
+            destNames = de.filter(e => !e.isfolder).map(e => e.name);
+          } catch (e) { row.dest_exists = false; }
+
+          const skipMode = (job.on_existing || 'skip') === 'skip';
+          for (const it of b.items || []) {
+            for (const o of b.outputs || []) {
+              for (const h of o.rungs || []) {
+                const name = P.outputName(it.name, h, o.codec);
+                const dests = orch.destinationsFor(o, h);
+                row.outputs++;
+                let allPresent = dests.length > 0;
+                for (const dd of dests) {
+                  if (dd === 'pcloud') {
+                    if (destNames.indexOf(name) === -1) allPresent = false;
+                  } else if (dd === 'vimeo') {
+                    let prior = null;
+                    try { prior = R ? R.findDelivery(it.name, o.codec, h, 'vimeo') : null; }
+                    catch (e2) { prior = null; }
+                    if (!prior || !prior.vimeo_uri) allPresent = false;
+                    else out.totals.vimeo_unchecked++;
+                  } else allPresent = false;
+                }
+                if (skipMode && allPresent) row.present.push(name);
+                else {
+                  row.todo++;
+                  if (o.codec === 'h264' && Number(h) === 1080) row.top_rung_likely_linked++;
+                }
+              }
+            }
+          }
+          if (R) { try { R.close(); R = require('/root/build/lib/record.js'); } catch (e3) {} }
+
+          if (row.top_rung_likely_linked && row.todo === row.top_rung_likely_linked) {
+            row.note = (row.note ? row.note + '. ' : '') +
+              'Everything here is already delivered. The ' + row.top_rung_likely_linked +
+              ' outstanding output(s) are 1080p H.264, which is normally LINKED from the ' +
+              'master rather than encoded - so this batch would very likely do no work at all.';
+          } else if (row.top_rung_likely_linked) {
+            row.note = (row.note ? row.note + '. ' : '') +
+              row.top_rung_likely_linked + ' of the outstanding output(s) are 1080p H.264, ' +
+              'normally linked from the master rather than encoded.';
+          }
+          out.totals.top_rung_likely_linked =
+            (out.totals.top_rung_likely_linked || 0) + row.top_rung_likely_linked;
+          out.totals.films += row.films;
+          out.totals.missing_sources += row.missing_sources.length;
+          out.totals.outputs += row.outputs;
+          out.totals.present += row.present.length;
+          out.totals.todo += row.todo;
+          out.batches.push(row);
+        }
+        out.skip_mode = (job.on_existing || 'skip') === 'skip';
+        try { if (R) R.close(); } catch (e) {}
+        return res.end(JSON.stringify(out));
+      } catch (e) {
+        try { if (R) R.close(); } catch (e2) {}
+        return res.end(JSON.stringify({ ok: false,
+          error: pc.redact(String(e.message)).slice(0, 200) }));
+      }
+    });
+    return;
+  }
+
   // ---- MAKE A FOLDER ------------------------------------------------------
   // Dr. K builds a job standing in the master folder, and the destination he
   // wants often does not exist yet - "ABTC2026 JMDs" beside "encodes", or

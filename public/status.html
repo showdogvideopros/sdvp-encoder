@@ -164,6 +164,34 @@ function remaining(r){
       doneB+=b*pct/100; leftB+=b*(1-pct/100);
     }
   });
+  // ⭐ A SINGLE-FILM RUN HAS NO FINISHED FILM TO MEASURE FROM, and that is
+  // exactly when the figure is wanted - one 90-minute master, nothing else in
+  // the run, no way to say how long is left. [MEASURED 2026-08-21] the guard
+  // below required a completed film, so every single-film run stayed silent
+  // from start to finish.
+  //
+  // The film in flight is its own evidence: its progress percentage against
+  // elapsed time is a rate, and on ONE long film it is arguably a better rate
+  // than averaging across films of different lengths.
+  //
+  // ⛔ BUT AN EARLY PERCENTAGE SWINGS. The original exclusion was right to be
+  // wary. So this speaks only after a minute of work AND 5% progress - below
+  // that the reading is noise wearing a number's clothes, and silence is the
+  // honest answer.
+  if(!anyDone && doneB && leftB){
+    var el0=(Date.now()-new Date(r.started_at).getTime())/1000;
+    var frac=doneB/(doneB+leftB);
+    if(el0>=60 && frac>=0.05){
+      var sl=el0/frac*(1-frac);
+      if(isFinite(sl) && sl>0){
+        var w0=sl<3600?(Math.round(sl/60)+' min'):((sl/3600).toFixed(1)+' h');
+        var d0=new Date(Date.now()+sl*1000);
+        return ' \u00b7 ~'+w0+' left, done about '+
+               d0.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      }
+    }
+    return '';
+  }
   if(!anyDone||!doneB||!leftB)return '';
   var elapsed=(Date.now()-new Date(r.started_at).getTime())/1000;
   if(elapsed<60)return '';
@@ -496,7 +524,7 @@ function buildReport(j,num){
         +(aun?' \u00b7 <b>'+aun+' measured by the old probe</b>':
           ' \u00b7 RMS '+(a.rms_min==null?'\u2014':a.rms_min.toFixed(1))+' to '+(a.rms_max==null?'\u2014':a.rms_max.toFixed(1))
           +' dB \u00b7 worst imbalance '+(a.imb_max==null?'\u2014':a.imb_max+' dB'))):'no audio measured',
-    aFail?'A movie failed a gated audio check \u2014 a dead channel, a silent channel, or sustained flatness. Play the master before re-encoding; the fault is usually in the source.'
+    aFail?'A movie failed a gated audio check \u2014 no audio stream at all, or a dead channel. Play the master before re-encoding; the fault is in the source, not the encode, and the files were still delivered.'
     :(aun?'Measured before 20 Aug, when the probe shared a pass with the contact sheet and under-read long files by up to 22 dB. These numbers are not trustworthy and must not be used to set thresholds. The files themselves were never affected.'
     :(aNone?'Not a fault. These movies were already present at their destinations, so nothing was encoded and there was nothing to measure.':'')));
 

@@ -672,6 +672,7 @@ function review(){
     b.items.forEach(function(it){ h+='<tr><td>'+esc(it.name)+'</td><td>'+per+'</td></tr>'; });
     h+='</table></div>';
   });
+  h+='<div id="preLine" style="margin-bottom:12px"></div>';
   h+='<div class="sum" id="sumLine">'+films+' file'+(films===1?'':'s')+' in '+job.batches.length+' batch'
     +(job.batches.length===1?'':'es')+', producing about '+outputs+' encoded file'+(outputs===1?'':'s')+'. '
     +'Anything already present at its destination is skipped, so the real number may be lower.'
@@ -679,6 +680,7 @@ function review(){
   h+='<div style="margin-top:22px;display:flex;gap:11px;flex-wrap:wrap">'
     +'<button class="btn pri" id="bNow" onclick="send(false)">start now</button>'
     +'<button class="btn warn" id="bHold" onclick="send(true)">hold for later</button>'
+    +'<button class="btn" id="bPre" onclick="preflight()">preflight check</button>'
     +'<button class="btn" onclick="closeModal()">back</button></div>';
   window.__job=job;
   openModal(h);
@@ -739,6 +741,71 @@ function send(hold){
    }).catch(function(e){
      SENDING=false;
      openModal('<h3>Not sent</h3><div class="err">no answer from the encoder: '+esc(e.message)+'</div>');
+   });
+}
+// PREFLIGHT - Dr. K, 2026-08-21: "A tired mind during production season may
+// forget what was encoded yesterday. No need to do it twice."
+// ADVISORY BY RULING. It never disables a button and never blocks a release;
+// both remain live while it runs and after it answers.
+function n0(v){return v==null?0:Number(v);}
+function preflight(){
+  var job=window.__job; if(!job)return;
+  var el=document.getElementById('preLine'); if(!el)return;
+  var btn=document.getElementById('bPre'); if(btn){btn.disabled=true;btn.textContent='checking\u2026';}
+  el.innerHTML='<div class="sum">asking pCloud about these films\u2026</div>';
+  fetch('/api/preflight',{method:'POST',cache:'no-store',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(job)})
+   .then(function(r){return r.json();}).then(function(j){
+     if(btn){btn.disabled=false;btn.textContent='preflight check';}
+     if(!j.ok){ el.innerHTML='<div class="err">Could not check: '+esc(j.error||'no answer')+'</div>'; return; }
+     var t=j.totals||{}, h='';
+     var miss=n0(t.missing_sources), present=n0(t.present), todo=n0(t.todo), outs=n0(t.outputs);
+     var linked=n0(t.top_rung_likely_linked);
+     // THE HEADLINE IS THE ALREADY-ENCODED QUESTION. It is the one a tired mind
+     // gets wrong, and the one that costs hours.
+     var cls='sum', head='';
+     if(miss){
+       cls='err';
+       head='<b>'+miss+' master'+(miss===1?'':'s')+' could not be found</b> \u2014 moved or renamed since this job was built. '
+           +'They will fail when the run reaches them.';
+     } else if(todo===0){
+       cls='sum'; head='<b>Everything in this job is already delivered.</b> Running it would do no work.';
+     } else if(linked && todo===linked){
+       cls='sum'; head='<b>Everything is already delivered.</b> The '+linked+' outstanding output'
+           +(linked===1?'':'s')+' '+(linked===1?'is':'are')+' 1080p H.264, normally linked from the master rather than encoded \u2014 so this would very likely do no work.';
+     } else if(present){
+       cls='sum'; head='<b>'+todo+' of '+outs+' output'+(outs===1?'':'s')+' still to make.</b> '
+           +present+' '+(present===1?'is':'are')+' already at the destination and would be skipped.'
+           +(linked?' '+linked+' of those outstanding '+(linked===1?'is':'are')+' 1080p H.264, normally linked rather than encoded.':'');
+     } else {
+       cls='sum'; head='<b>All '+outs+' output'+(outs===1?'':'s')+' still to make.</b> Nothing is at the destination yet.'
+           +(linked?' '+linked+' '+(linked===1?'is':'are')+' 1080p H.264, normally linked rather than encoded.':'');
+     }
+     h+='<div class="'+cls+'">'+head;
+     (j.batches||[]).forEach(function(b){
+       h+='<div style="margin-top:9px;font-size:17px">'
+         +'<b>'+esc(b.label)+'</b> \u2014 '+b.films+' film'+(b.films===1?'':'s')
+         +' \u00b7 '+b.present.length+' already there \u00b7 '+b.todo+' to make';
+       if(!b.dest_exists)h+='<div class="muted">the destination folder does not exist yet \u2014 it will be created</div>';
+       h+='<div class="muted">'+esc(b.dest_path)+'</div>';
+       if(b.missing_sources&&b.missing_sources.length){
+         h+='<div class="err" style="margin-top:5px">missing: '+b.missing_sources.map(esc).join(', ')+'</div>';
+       }
+       if(b.note)h+='<div class="muted" style="margin-top:4px">'+esc(b.note)+'</div>';
+       h+='</div>';
+     });
+     h+='<div class="muted" style="margin-top:10px">This is advice, not a gate \u2014 start or hold as you see fit.</div>';
+     h+='</div>';
+     el.innerHTML=h;
+   }).catch(function(e){
+     if(btn){btn.disabled=false;btn.textContent='preflight check';}
+     var m=String((e&&e.message)||e||'');
+     var netlike=/fetch|network|failed to fetch|load/i.test(m);
+     el.innerHTML='<div class="err">'
+       +(netlike?'Could not reach the encoder.'
+                :'The check answered, but this page could not read it: '+esc(m))
+       +'</div>';
+     try{ console.error('preflight:',e); }catch(e2){}
    });
 }
 function clearJob(){ closeModal(); }
