@@ -578,11 +578,23 @@ http.createServer((req, res) => {
       '         THEN 1 ELSE 0 END) AS wit_nodrift ' +
       'FROM deliveries d JOIN rungs r ON r.rung_id=d.rung_id ' +
       'JOIN movies m ON m.item_id=r.item_id WHERE m.run_id=?', [rid]);
+    // ⛔ THE OLD-PROBE DISCRIMINATOR IS SILENCE, NOT FLAT FACTOR (Dr. K's ruling
+    // 2026-08-21). flat_max was the marker until the parser learned to read
+    // -Infinity, which SQLite cannot store - so a PERFECTLY FLAT channel now
+    // lands as NULL in flat_max, indistinguishable from "never measured". A
+    // real finding would have been filed as an untrustworthy old row. No row
+    // written before 2026-08-21 can carry silence_n; every row after does.
     const a = q1('SELECT ' +
       'SUM(CASE WHEN q.audio_ok=0 THEN 1 ELSE 0 END) AS aud_failed, ' +
       'SUM(CASE WHEN q.audio_ok IS NOT NULL AND q.flat_max IS NULL ' +
-      '         THEN 1 ELSE 0 END) AS aud_old ' +
+      '         AND q.silence_n IS NULL THEN 1 ELSE 0 END) AS aud_old ' +
       'FROM quality q JOIN movies m ON m.item_id=q.item_id WHERE m.run_id=?', [rid]);
+    // RETAINED SCRATCH. [MEASURED 2026-08-21] runVerdict named movies, rungs,
+    // deliveries and quality - and nothing at all about scratch, so a run with
+    // 16 GB of abandoned working files read PASS. Retention is deliberate on a
+    // FAILED film, but it is proportional to failures and grows unwatched.
+    const sc = q1('SELECT COUNT(*) AS n FROM movies ' +
+      'WHERE run_id=? AND scratch_path IS NOT NULL', [rid]);
     // Duplicate audio readings across DIFFERENT movies. Two movies of unequal
     // length cannot measure identically; this is what caught the probe defect.
     const dup = q1('SELECT COUNT(*) AS n FROM (' +
@@ -598,7 +610,12 @@ http.createServer((req, res) => {
     if (num(d.not_ok))        findings.push({ k: 'delivery unconfirmed',n: num(d.not_ok),        sev: 'FAIL' });
     if (num(d.wit_bad))       findings.push({ k: 'vimeo not verified',  n: num(d.wit_bad),       sev: 'FAIL' });
     if (num(d.wit_pending))   findings.push({ k: 'vimeo never answered', n: num(d.wit_pending),   sev: 'CHECK' });
-    if (num(a.aud_failed))    findings.push({ k: 'audio gate failed',   n: num(a.aud_failed),    sev: 'FAIL' });
+    // ⛔ CHECK, NOT FAIL. Dr. K's ruling 2026-08-21: the film SHIPS and a human
+    // looks at it. The encode is not wrong - the master is - and red is for
+    // work that did not happen. This finding is now the ONLY road an audio
+    // fault travels, since it no longer fails the rung.
+    if (num(a.aud_failed))    findings.push({ k: 'audio wants a look',  n: num(a.aud_failed),    sev: 'CHECK' });
+    if (num(sc.n))            findings.push({ k: 'scratch retained',    n: num(sc.n),            sev: 'CHECK' });
     if (num(dup.n))           findings.push({ k: 'duplicate audio',     n: num(dup.n),           sev: 'CHECK' });
     if (num(d.wit_nodrift))   findings.push({ k: 'no drift figure',     n: num(d.wit_nodrift),   sev: 'CHECK' });
     if (num(a.aud_old))       findings.push({ k: 'old audio probe',     n: num(a.aud_old),       sev: 'CHECK' });
@@ -681,15 +698,59 @@ http.createServer((req, res) => {
         audio: R.query(
           'SELECT COUNT(*) AS n, ' +
           'SUM(CASE WHEN q.audio_ok=1 THEN 1 ELSE 0 END) AS passed, ' +
-          'SUM(CASE WHEN q.flat_max IS NULL THEN 1 ELSE 0 END) AS unmeasurable, ' +
+          'SUM(CASE WHEN q.flat_max IS NULL AND q.silence_n IS NULL ' +
+          '         THEN 1 ELSE 0 END) AS unmeasurable, ' +
+          'SUM(CASE WHEN q.silence_n IS NULL THEN 1 ELSE 0 END) AS no_silence, ' +
           'MIN(q.rms_min_db) AS rms_min, MAX(q.rms_max_db) AS rms_max, ' +
-          'MAX(q.imbalance_db) AS imb_max, MAX(q.flat_max) AS flat_max ' +
+          'MAX(q.imbalance_db) AS imb_max, MAX(q.flat_max) AS flat_max, ' +
+          'SUM(CASE WHEN q.silence_n > 0 THEN 1 ELSE 0 END) AS with_silence, ' +
+          'MAX(q.silence_pct) AS silence_pct_max, ' +
+          'MAX(q.silence_longest_s) AS silence_longest_s ' +
           'FROM quality q JOIN movies m ON m.item_id=q.item_id WHERE m.run_id=?', [rid]),
         audio_rows: R.query(
           'SELECT m.source_name, q.audio_ok, q.channels, q.peak_max_db, q.rms_min_db, ' +
-          'q.rms_max_db, q.imbalance_db, q.flat_max, q.audio_failed, q.sheets_uploaded ' +
+          'q.rms_max_db, q.imbalance_db, q.flat_max, q.audio_failed, q.sheets_uploaded, ' +
+          'q.silence_n, q.silence_total_s, q.silence_pct, q.silence_longest_s, ' +
+          'q.silence_longest_at_s, q.silence_ends_at_end ' +
           'FROM quality q JOIN movies m ON m.item_id=q.item_id WHERE m.run_id=? ' +
-          'ORDER BY q.imbalance_db DESC', [rid]),
+          'ORDER BY q.silence_pct DESC, q.imbalance_db DESC', [rid]),
+        // ARTIFACTS - sheets, audio reports, manifests. Every one carries a
+        // pCloud fileid the record used to discard. "ok" is OUR word for it;
+        // "confirmed" means the destination answered with an id.
+        artifacts: R.query(
+          'SELECT a.kind, COUNT(*) AS cnt, ' +
+          'SUM(CASE WHEN a.ok=1 THEN 1 ELSE 0 END) AS ok_n, ' +
+          'SUM(CASE WHEN a.pcloud_fileid IS NOT NULL THEN 1 ELSE 0 END) AS confirmed, ' +
+          'SUM(CASE WHEN a.sha1_verified=1 THEN 1 ELSE 0 END) AS sha1_ok, ' +
+          'SUM(COALESCE(a.bytes,0)) AS bytes ' +
+          'FROM artifacts a JOIN movies m ON m.item_id=a.item_id ' +
+          'WHERE m.run_id=? GROUP BY a.kind ORDER BY a.kind', [rid]),
+        artifacts_dirty: R.query(
+          'SELECT m.source_name, a.kind, a.codec, a.name, a.ok, a.pcloud_fileid, ' +
+          'a.sha1_verified, a.error FROM artifacts a JOIN movies m ON m.item_id=a.item_id ' +
+          "WHERE m.run_id=? AND (a.ok IS NOT 1 OR a.pcloud_fileid IS NULL " +
+          "OR (a.error IS NOT NULL AND a.error<>''))", [rid]),
+        // SCRATCH - the record names the path; the DISK says whether it is
+        // still there. Dr. K deletes these by hand in Transmit, so a report
+        // reciting the record alone would keep pointing at folders he cleaned.
+        scratch: (function () {
+          const rows = R.query(
+            'SELECT source_name, phase, scratch_path FROM movies ' +
+            'WHERE run_id=? AND scratch_path IS NOT NULL', [rid]);
+          return rows.map(function (x) {
+            let bytes = null, present = false;
+            try {
+              if (fs.existsSync(x.scratch_path)) {
+                present = true;
+                bytes = Number(require('child_process')
+                  .execFileSync('du', ['-sb', x.scratch_path], { encoding: 'utf8' })
+                  .split(/\s+/)[0]) || null;
+              }
+            } catch (e) { bytes = null; }
+            return { source_name: x.source_name, phase: x.phase,
+                     path: x.scratch_path, present: present, bytes: bytes };
+          });
+        })(),
         // Per-movie rung tallies. A movie that owed nothing reads 0 stored and
         // >0 exists; one that did work reads the inverse. [MEASURED 2026-08-20,
         // run 13: 2 and 14, nothing in between.] This is what lets the report

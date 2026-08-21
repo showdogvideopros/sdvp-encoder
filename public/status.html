@@ -12,6 +12,8 @@ header h1{font-family:'Playfair Display',Georgia,serif;font-size:29px;margin:0;f
 .ctl{display:flex;align-items:center;gap:8px;font-size:19px}
 select{font-family:inherit;font-size:18px;padding:6px 10px;border-radius:5px;border:0}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--gold);display:inline-block}
+a.nav{color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.5);padding:6px 15px;border-radius:16px;font-size:16px}
+a.nav:hover{background:rgba(255,255,255,.14)}
 main{padding:22px;max-width:1400px;margin:0 auto}
 .card{background:#fff;border:1px solid var(--line);border-radius:9px;padding:20px 22px;margin-bottom:18px}
 .card h2{font-size:22px;margin:0 0 4px;font-weight:600}
@@ -94,6 +96,7 @@ table.rep th{color:#2c4a48;font-weight:400;font-size:16px}
 </style></head><body>
 <header>
   <h1>SDVP Encoder</h1>
+  <a class="nav" href="/jobs">&larr; jobs</a>
   <span class="sp"></span>
   <span class="ctl"><span class="dot" id="dot"></span><span id="stamp">—</span></span>
   <span class="ctl" id="stopwrap" style="display:none">
@@ -381,6 +384,21 @@ function showReport(num){
     openModal('Run #'+num+' report','<div class="err">could not read the record: '+esc(e.message)+'</div>');
   });
 }
+// Seconds as m:ss or h:mm:ss - a person reads "3:07", not "187.1 s".
+function hms(sec){
+  if(sec==null||!isFinite(sec))return '\u2014';
+  var t=Math.round(Number(sec)),h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s2=t%60;
+  var p=function(n){return n<10?'0'+n:''+n;};
+  return h?(h+':'+p(m)+':'+p(s2)):(m+':'+p(s2));
+}
+function gb(b){
+  if(b==null||!isFinite(b))return '\u2014';
+  var n=Number(b);
+  if(n>=1073741824)return (n/1073741824).toFixed(1)+' GB';
+  if(n>=1048576)return (n/1048576).toFixed(0)+' MB';
+  if(n>=1024)return (n/1024).toFixed(0)+' KB';
+  return n+' B';
+}
 function buildReport(j,num){
   var run=j.run||{};
   // LAST is null until the first fetch lands. Guard it: a report opened before
@@ -468,7 +486,7 @@ function buildReport(j,num){
   (j.audio_rows||[]).forEach(function(r){
     if(r.audio_ok==null){aNone++;return;}
     if(r.audio_ok===0)aFail++;
-    if(r.flat_max==null)aOld++;});
+    if(r.flat_max==null&&r.silence_n==null)aOld++;});
   aun=aOld;
   var av=aFail?'FAIL':((aun||aNone)?'CHECK':(an?'PASS':'NA'));
   h+=repRow('audio',av,
@@ -494,7 +512,7 @@ function buildReport(j,num){
     h+='<div class="meta" style="margin-top:20px;font-size:19px;color:#15302f">audio, movie by movie'
       +(ndup?' \u2014 <span style="color:#8a6d10">identical readings found on different movies</span>':'')+'</div>';
     if(ndup)h+='<div class="fix" style="margin-bottom:8px">Two movies of different lengths cannot measure identically. A repeated row means the probe reported on something other than that movie. Highlighted below.</div>';
-    h+='<table class="rep"><tr><th>movie</th><th>RMS</th><th>peak</th><th>imbalance</th><th>flat</th><th>sheets</th></tr>';
+    h+='<table class="rep"><tr><th>movie</th><th>RMS</th><th>peak</th><th>imbalance</th><th>silence</th><th>flat</th><th>sheets</th></tr>';
     j.audio_rows.forEach(function(r){
       var k=r.rms_max_db+'|'+r.rms_min_db;
       var cls=(r.rms_max_db!=null&&dups[k])?' class="dup"':'';
@@ -503,8 +521,47 @@ function buildReport(j,num){
         +'<td>'+(r.peak_max_db==null?'\u2014':r.peak_max_db.toFixed(2))+'</td>'
         +'<td>'+(r.imbalance_db==null?'\u2014':r.imbalance_db+' dB')+'</td>'
         +'<td>'+(r.flat_max==null?'<span style="color:#8a6d10">not kept</span>':r.flat_max)+'</td>'
+        +'<td>'+(r.silence_n==null?'<span style="color:#8a6d10">not measured</span>'
+                  :(n0(r.silence_n)===0?'none'
+                  :(hms(r.silence_total_s)+' \u00b7 '+r.silence_pct+'%'
+                    +(Number(r.silence_ends_at_end)===1?' \u00b7 at end':''))))+'</td>'
         +'<td>'+n0(r.sheets_uploaded)+'</td></tr>';});
     h+='</table><table class="rep">';
+  }
+
+  // ARTIFACTS - sheets, audio reports, manifests. Every one carries a pCloud
+  // fileid the record used to discard entirely; sheets carry a verified sha1
+  // as well. Before 21 Aug the report could say "62 videos confirmed" and
+  // "sheets: 1" in the same breath, where the second meant only that the daemon
+  // believed it had tried. Same evidence class now, or say nothing.
+  var arts=j.artifacts||[];
+  if(arts.length){
+    var aTot=0,aOk=0,aConf=0,aBytes=0;
+    arts.forEach(function(x){aTot+=n0(x.cnt);aOk+=n0(x.ok_n);aConf+=n0(x.confirmed);aBytes+=n0(x.bytes);});
+    var dirty=(j.artifacts_dirty||[]).length;
+    var label={sheet:'contact sheets',audio_report:'audio reports',manifest:'manifests'};
+    var parts=arts.map(function(x){
+      return n0(x.cnt)+' '+(label[x.kind]||x.kind)
+             +(n0(x.sha1_ok)?' ('+n0(x.sha1_ok)+' checksum-verified)':'');});
+    h+=repRow('other files',dirty?'CHECK':(aConf===aTot?'PASS':'CHECK'),
+      parts.join(' \u00b7 ')+' \u00b7 <b>'+aConf+' of '+aTot+' confirmed by pCloud file id</b> \u00b7 '+gb(aBytes),
+      dirty?'A sheet, audio report or manifest did not confirm at pCloud. The video files are unaffected. Look in the destination folder; if it is missing, re-running the show with on_existing set to skip will redo only what is absent.'
+      :(aConf===aTot?'':'Some artifacts have no file id from pCloud, so we only know we tried to send them. Check the destination folder.'));
+  }
+
+  // SILENCE - recorded only, never gated. Dr. K's ruling 21 Aug.
+  var sil=(j.audio_rows||[]).filter(function(r){return r.silence_n!=null;});
+  if(sil.length){
+    var withSil=sil.filter(function(r){return n0(r.silence_n)>0;});
+    var worst=null;
+    withSil.forEach(function(r){if(!worst||n0(r.silence_pct)>n0(worst.silence_pct))worst=r;});
+    var midFilm=withSil.filter(function(r){return Number(r.silence_ends_at_end)!==1;}).length;
+    h+=repRow('silence','NA',
+      withSil.length?(withSil.length+' of '+sil.length+' movie(s) carry silence \u00b7 worst '
+        +hms(worst.silence_total_s)+' ('+worst.silence_pct+'%) in '+esc(worst.source_name)
+        +(midFilm?' \u00b7 <b>'+midFilm+' not at the end of the film</b>':' \u00b7 all at the end of the film')):
+        'none detected in '+sil.length+' movie(s)',
+      withSil.length?'Recorded only \u2014 nothing here fails anything. A FADE OR END CARD is a short stretch at the end; our edit template leaves about 1.8 s. A SLO-MO PASSAGE is a short stretch in the middle. A PULLED MICROPHONE is a long one anywhere. Judge it against what you know of the master.':'');
   }
 
   // BITRATE BANDS
@@ -513,12 +570,28 @@ function buildReport(j,num){
     bands.length?bands.map(function(b){return b.codec+' '+b.height+'p '+(b.lo==null?'\u2014':b.lo.toFixed(0))+'\u2013'+(b.hi==null?'\u2014':b.hi.toFixed(0))+'%';}).join(' \u00b7 '):'nothing measured',
     bands.length?'Percentages are each rung\u2019s share of its own ceiling. A rung outside its band fails at encode time, so a number here means it passed. Very low figures across a whole run can mean a soft source.':'');
 
-  // SCRATCH
-  if(live){
-    var kept=(live.items||[]).filter(function(x){return x.scratch_retained;}).length;
-    h+=repRow('working files',kept?'FAIL':'PASS',
-      kept?('<b>'+kept+' movie(s) kept their working directory</b>'):'nothing left behind',
-      kept?'Scratch is only kept when something failed. The directory holds the part-finished files \u2014 leave it until the failure is understood, then it can be deleted.':'');
+  // WORKING FILES - record for the paths, disk for the truth. The old version
+  // read LIVE PAGE STATE, so it could not name a path, could not total the
+  // disk, and vanished entirely for any run the page no longer held.
+  // Retention on a FAILED movie is deliberate, so this is CHECK, never FAIL.
+  // But it is proportional to failures and grows unwatched: [MEASURED 21 Aug]
+  // 16.6 GB sat in two directories from run 7 with nothing anywhere naming them.
+  var scr=j.scratch||[];
+  var here=scr.filter(function(x){return x.present;});
+  var goneN=scr.length-here.length;
+  if(scr.length){
+    var sBytes=0;here.forEach(function(x){sBytes+=n0(x.bytes);});
+    var listed=here.map(function(x){
+      return '<div style="font-family:ui-monospace,Menlo,monospace;font-size:15px;margin-top:4px">'
+        +esc(x.path)+'  \u2014  '+gb(x.bytes)+'</div>';}).join('');
+    h+=repRow('working files',here.length?'CHECK':'PASS',
+      here.length?('<b>'+here.length+' movie(s) kept their working directory \u00b7 '+gb(sBytes)+'</b>'+listed)
+        :(goneN+' recorded, none still on disk'),
+      here.length?'Kept on purpose \u2014 a failed movie\u2019s part-finished files are the ones worth looking at. Once the failure is understood, delete the directory above in Transmit. It is under /var/lib/ so it is root-only and will not appear in an ordinary file browser. Nothing else cleans these up; they accumulate one per failed movie.'
+        :'These were recorded as retained and are no longer on disk \u2014 already cleaned up.');
+  }else{
+    h+=repRow('working files','PASS','nothing left behind',
+      'Every movie in this run finished cleanly, so its working directory was deleted. Runs before 21 Aug did not record the path, so an older run shows nothing here whether or not it left files.');
   }
 
   // DIRTY DELIVERIES
