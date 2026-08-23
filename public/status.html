@@ -442,6 +442,32 @@ function buildReport(j,num){
       +'This run is still in flight. Rows that read CHECK because work is not finished yet are expected, not faults. '
       +'The rows worth reading mid-run are AUDIO and BITRATE \u2014 a defect there repeats on every remaining movie.</div>';
   }
+  // FINDINGS PANEL. [MEASURED 2026-08-22] The button and this report body each
+  // decided separately - run 38 showed a RED button above a report whose every
+  // row read green, because the film that failed was never written to the record
+  // and every row below describes only the record. The verdict and its findings
+  // now come from the server, from the SAME call the button colours from, so a
+  // finding added to the scoring function appears here the same day.
+  // A CLEAN run says so out loud. A panel that is absent when all is well
+  // teaches the eye to skip that part of the page.
+  if(j.verdict){
+    var V=j.verdict, fs=V.findings||[];
+    var bg=V.verdict==='FAIL'?'#fbe4e4':(V.verdict==='CHECK'?'#fdf3d6':'#e3f3e6');
+    var bd=V.verdict==='FAIL'?'#efbdbb':(V.verdict==='CHECK'?'#eddba1':'#b6dcc0');
+    h+='<div style="background:'+bg+';border:1px solid '+bd+';border-radius:6px;padding:13px 16px;margin-bottom:16px">';
+    h+='<div>'+vchip(V.verdict)+'<span style="margin-left:11px;font-size:16px;color:#46605e">'
+      +(fs.length? (fs.length+' finding'+(fs.length===1?'':'s')) : 'nothing to look at')+'</span></div>';
+    for(var fi=0;fi<fs.length;fi++){
+      var F=fs[fi];
+      h+='<div style="margin-top:11px;padding-top:11px;border-top:1px solid '+bd+'">'
+        +'<span style="font-weight:600">'+esc(F.k)+'</span>'
+        +(n0(F.n)>1?'<span style="color:#4d6462"> \u00d7 '+n0(F.n)+'</span>':'')
+        +'<span style="margin-left:9px">'+vchip(F.sev)+'</span>'
+        +(F.fix?'<div class="fix">'+esc(F.fix)+'</div>':'')
+        +'</div>';
+    }
+    h+='</div>';
+  }
   h+='<table class="rep"><tr><th style="width:150px">what</th><th style="width:90px">state</th><th>evidence, and what to do</th></tr>';
 
   // ITEMS

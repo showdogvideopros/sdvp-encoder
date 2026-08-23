@@ -834,6 +834,35 @@ http.createServer((req, res) => {
 
     const num = v => Number(v || 0);
     const findings = [];
+
+    // RUN-LEVEL TRUTH. The run's own status word is evidence, and until now
+    // nothing read it. [MEASURED 2026-08-22] Run 38 carried
+    // COMPLETE_WITH_FAILURES in the header of the very report being scored and
+    // still scored PASS - because a film that fails by a THROWN error is never
+    // written to the record at all. Every per-film query below then asks about
+    // a set that never contained it, and comes back honestly green. The status
+    // word was the only place the failure landed.
+    const runRow = q1('SELECT status, job_file FROM runs WHERE run_id=?', [rid]);
+    if (String(runRow.status || '') === 'COMPLETE_WITH_FAILURES') {
+      findings.push({ k: 'run ended with failures', n: 1, sev: 'FAIL' });
+    }
+    // THE JOB IS THE ONLY LIST OF WHAT WAS ATTEMPTED; the record holds what
+    // survived. Comparing the two is the one check that does not need to know
+    // HOW a film was lost, so it covers paths nobody has thought of yet.
+    // Dr. K's ruling 2026-08-22: CHECK, amber. A missing row is a bookkeeping
+    // loss; the run's own status carries the severity.
+    let jobN = null;
+    try {
+      const jd = JSON.parse(fs.readFileSync(runRow.job_file, 'utf8'));
+      jobN = (jd.batches || []).reduce(function (a, b) {
+        return a + ((b.items || []).length); }, 0);
+    } catch (e) { jobN = null; }
+    if (jobN !== null) {
+      const recN = num(q1('SELECT COUNT(*) AS c FROM movies WHERE run_id=?', [rid]).c);
+      if (jobN > recN) {
+        findings.push({ k: 'films in job, not in record', n: jobN - recN, sev: 'CHECK' });
+      }
+    }
     if (num(f.mv_failed))     findings.push({ k: 'movie failed',        n: num(f.mv_failed),     sev: 'FAIL' });
     // CHECK, not FAIL - and it still appears, so a halted run is never silently
     // green. It says what happened: you stopped it.
@@ -856,6 +885,29 @@ http.createServer((req, res) => {
     let verdict = 'PASS';
     if (findings.some(x => x.sev === 'CHECK')) verdict = 'CHECK';
     if (findings.some(x => x.sev === 'FAIL'))  verdict = 'FAIL';
+    // REMEDIATION LIVES WITH THE FINDING, not in the page. Dr. K's standing
+    // requirement is that every row names what to do about it, written for 1 AM.
+    // Keeping the text HERE means a finding added to this function arrives
+    // complete in every surface that renders it - which is the defect measured
+    // 2026-08-22, when the button and the report body each decided separately
+    // and the report body never learned about two new findings.
+    const FIX = {
+      "movie failed": "This film did not finish. Its working files were kept - the working-files row below names the path. Fix the cause and re-run the film.",
+      "halted by operator": "You stopped this run. Films that never started were never encoded and are NOT at the destination. Rebuild a job for them when ready.",
+      "rung failed": "An output failed encoding or verification. The rungs row names the height. Nothing was delivered for it, so that height is missing at the destination.",
+      "delivery unconfirmed": "The destination never confirmed a file we sent. Treat that height as NOT delivered and list the destination folder yourself before assuming it arrived.",
+      "vimeo not verified": "Vimeo answered and its answer disagrees with what we sent. Open the video at Vimeo and compare its length against the master before re-uploading.",
+      "vimeo never answered": "Vimeo had not finished transcoding when we asked. Usually fine - re-open this report later. Still unanswered tomorrow means go and look at Vimeo.",
+      "audio wants a look": "The audio measured outside the normal band. The film SHIPPED and the encode is not wrong - listen to the master before this goes to a customer.",
+      "scratch retained": "Working files were kept on the box because a film failed. Nothing deletes them automatically. The working-files row has the paths.",
+      "duplicate audio": "Two films of different lengths measured identically, which cannot happen. Suspect the measuring code, not the films.",
+      "no drift figure": "Checked by code that discarded the length comparison. The verdict stands; the evidence behind it does not. Fixed 20 Aug - later runs carry the figure.",
+      "old audio probe": "Measured before the audio probe was fixed on 21 Aug. Not a fault, just not trustworthy. Ignore the audio numbers for this run.",
+      "upload retried": "An upload needed more than one attempt. It succeeded, but a destination that needs retries is worth watching.",
+      "run ended with failures": "The daemon recorded a failure during this run. Every row below may still read clean - a film that fails by a thrown error is never written to the record at all. Compare the job list against the films shown here.",
+      "films in job, not in record": "The job listed more films than the record holds. The missing film failed in a way that left no row - its name is in the daemon own memory, on the run card. It is NOT at the destination and must be re-run."
+    };
+    for (const x of findings) { x.fix = FIX[x.k] || null; }
     return { verdict: verdict, findings: findings };
   }
 
@@ -1000,6 +1052,11 @@ http.createServer((req, res) => {
           'MAX(r.pct_of_cap) AS hi FROM rungs r JOIN movies m ON m.item_id=r.item_id ' +
           'WHERE m.run_id=? AND r.pct_of_cap IS NOT NULL GROUP BY r.codec, r.height', [rid])
       };
+      // THE REPORT CARRIES THE VERDICT IT IS SCORED BY. [MEASURED
+      // 2026-08-22] The button and the report body each decided separately:
+      // run 38 showed a RED button over a report whose every row read green.
+      // One decision, rendered twice.
+      out.verdict = runVerdict(R, rid);
       R.close();
       return res.end(JSON.stringify(out));
     } catch (e) {
