@@ -788,8 +788,13 @@ http.createServer((req, res) => {
   //
   // There is NO CONTINUE. A stopped run is re-made as a fresh job, because a
   // resumable run is a run that resumes with the wrong configuration intact.
-  if (req.url === '/api/stop' || req.url === '/api/abort') {
+  // PAUSE is STOP plus the job file going back to staging, so the SAME job
+  // can be released again. Not a mid-film suspend - the film in flight always
+  // finishes. On resume the finished films are skipped by the cheap existence
+  // check, which is what makes this cheap rather than a re-run.
+  if (req.url === '/api/stop' || req.url === '/api/abort' || req.url === '/api/pause') {
     const abort = req.url === '/api/abort';
+    const pause = req.url === '/api/pause';
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     const run = (state.runs || [])[0];
     if (!run || run.finished_at) {
@@ -803,7 +808,7 @@ http.createServer((req, res) => {
                'under the right name, which a later run would trust. Press STOP ' +
                'instead - it lets this upload finish, then halts.' }));
     }
-    state.stop_requested = { mode: abort ? 'ABORT' : 'STOP',
+    state.stop_requested = { mode: abort ? 'ABORT' : (pause ? 'PAUSE' : 'STOP'),
                              at: new Date().toISOString(),
                              run_number: run.run_number };
     save({ force: true });
@@ -811,6 +816,10 @@ http.createServer((req, res) => {
       setTimeout(function () { console.log('ABORT requested - exiting'); process.exit(1); }, 400);
       return res.end(JSON.stringify({ ok: true, mode: 'ABORT',
         message: 'Aborting now. The daemon will stop and will not resume this job.' }));
+    }
+    if (pause) {
+      return res.end(JSON.stringify({ ok: true, mode: 'PAUSE',
+        message: 'Pausing. The film being encoded finishes and is delivered, then the job goes back to staging. Release it again and the films already made are skipped.' }));
     }
     return res.end(JSON.stringify({ ok: true, mode: 'STOP',
       message: 'Stopping after the current file finishes. Nothing further will start.' }));

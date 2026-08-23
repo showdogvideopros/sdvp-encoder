@@ -140,7 +140,7 @@ function runningRows(st){
         +'<div class="muted"><span class="tag b">running</span> '+esc(word)
         +' &middot; '+pct.toFixed(0)+'% &middot; '+esc(elapsed(r.started_at))+' elapsed'
         +' &middot; '+esc(r.job_label)+'</div></div>'
-        +'<button class="btn dim" disabled title="Needs the resume check before it is safe - a paused job would re-encode films it already finished.">pause</button>'
+        +'<button class="btn" onclick="askPause()">pause</button>'
         +'<button class="btn" onclick="askStop()">stop</button>'
         +'<button class="btn warn" onclick="askAbort()">abort</button></div>';
     });
@@ -148,6 +148,23 @@ function runningRows(st){
   return h;
 }
 
+function askPause(){
+  openModal('<h3>Pause after this film?</h3>'
+    +'<div class="muted" style="margin-top:9px">The film being encoded now finishes and is '
+    +'delivered, then the job goes back to staging. Release it again whenever you like - the '
+    +'films already made are skipped without re-downloading anything.</div>'
+    +'<div style="margin-top:20px"><button class="btn pri" onclick="doPause()">pause after this film</button> '
+    +'<button class="btn" onclick="closeModal()">keep going</button></div>');
+}
+function doPause(){
+  fetch('/api/pause',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
+    openModal('<h3>'+(j.ok?'Pausing':'Not paused')+'</h3><div class="'+(j.ok?'ok':'err')+'">'
+      +esc(j.message||j.error||'')+'</div>');
+    loadProgress();
+  }).catch(function(e){
+    openModal('<h3>Not paused</h3><div class="err">no answer from the encoder: '+esc(e.message)+'</div>');
+  });
+}
 function askStop(){
   openModal('<h3>Stop after this film?</h3>'
     +'<div class="muted" style="margin-top:9px">The film being encoded now finishes and is delivered. '
