@@ -675,6 +675,67 @@ http.createServer((req, res) => {
   //
   // The filename is taken apart and rebuilt from its own basename: nothing the
   // caller sends can point outside the held folder.
+  // ---- QUEUED JOBS ------------------------------------------------------
+  // Jobs SENT but not yet started: plain .json in the queue folder. Intake
+  // renames to .accepted the moment it takes one, so the presence of the
+  // plain name IS the definition of "not started" - no separate state needed.
+  // ⚠ Intake is ALPHABETICAL (readdirSync().sort(), files[0]), not by the time
+  // a job was queued. The order below is the order they will actually run.
+  if (req.url === '/api/queued') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    try {
+      const dir = path.join(st.ROOT, 'jobs');
+      const out = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort().map(function (f) {
+        let j = null;
+        try { j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (e) { j = null; }
+        const films = j ? (j.batches || []).reduce((n, b) => n + ((b.items || []).length), 0) : null;
+        return { file: f,
+                 label: (j && j.job_label) || f,
+                 films: films,
+                 batches: j ? (j.batches || []).length : null,
+                 built_at: (j && j.built_at) || null,
+                 unreadable: !j };
+      });
+      return res.end(JSON.stringify({ ok: true, queued: out }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
+  // ---- HOLD A QUEUED JOB ------------------------------------------------
+  // The inverse of /api/held/release/. A job that has not started goes back to
+  // staging, where it can be reviewed, edited or re-released.
+  // ⛔ THE RACE IS REAL AND IS NOT PAPERED OVER. Intake polls every 3 seconds,
+  // so a job can be taken between the click and this call. If the plain .json
+  // is gone the job STARTED - say so plainly rather than reporting a success
+  // that did not happen. There is no un-starting; that is what STOP is for.
+  if (req.url.indexOf('/api/job/unqueue/') === 0) {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const raw = decodeURIComponent(req.url.split('/').pop().split('?')[0]);
+    if (!/^[0-9A-Za-z_.-]+\.json$/.test(raw) || raw.indexOf('..') !== -1) {
+      return res.end(JSON.stringify({ ok: false, error: 'bad job name' }));
+    }
+    const from = path.join(st.ROOT, 'jobs', raw);
+    const to = path.join(st.ROOT, 'held', raw);
+    if (!fs.existsSync(from)) {
+      const started = fs.existsSync(from + '.accepted');
+      return res.end(JSON.stringify({ ok: false, started: started,
+        error: started ? 'That job has already started - it was taken from the queue before this reached the encoder. Use STOP to halt it after the film in flight.'
+                       : 'That job is no longer queued.' }));
+    }
+    if (fs.existsSync(to)) {
+      return res.end(JSON.stringify({ ok: false, error: 'a job by that name is already in staging' }));
+    }
+    try {
+      fs.renameSync(from, to);
+      st.event({ kind: 'job_unqueued', file: raw });
+      return res.end(JSON.stringify({ ok: true, held: true,
+        message: 'Back in staging. Nothing was lost - review, edit or release it again.' }));
+    } catch (e) {
+      return res.end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) }));
+    }
+  }
+
   if (req.url.indexOf('/api/held/release/') === 0 ||
       req.url.indexOf('/api/held/discard/') === 0) {
     const release = req.url.indexOf('/api/held/release/') === 0;

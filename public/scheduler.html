@@ -205,22 +205,54 @@ function heldRows(j){
   return h;
 }
 
-// QUEUED JOBS ARE NOT LISTED YET. They are .json files in the intake folder and
-// no route reports them, so HOLD has nothing to act on from here. Named plainly
-// rather than left as an empty space that looks like "nothing queued".
-var QUEUED_NOTE = '<div class="muted" style="margin:12px 0 4px">'
-  +'Jobs already sent and waiting their turn are not listed here yet.</div>';
+function queuedRows(j){
+  if(!j || !j.ok || !j.queued.length) return '';
+  var h='';
+  j.queued.forEach(function(q,ix){
+    h+='<div class="row"><div class="nm"><b>'+esc(q.label)+'</b>'
+      +'<div class="muted"><span class="tag b">queued</span> '
+      +(ix===0?'next up':'position '+(ix+1))
+      +(q.films!=null?' &middot; '+q.films+' file'+(q.films===1?'':'s'):'')
+      +(q.batches!=null?' in '+q.batches+' batch'+(q.batches===1?'':'es'):'')
+      +(q.built_at?' &middot; built '+esc(dt(q.built_at)):'')
+      +(q.unreadable?' &middot; <b>this file could not be read</b>':'')
+      +'</div></div>'
+      +'<button class="btn" onclick="askHold(\''+esc(q.file)+'\',\''+esc(q.label)+'\')">hold</button></div>';
+  });
+  return h;
+}
+function askHold(f,label){
+  openModal('<h3>Hold this job?</h3><div class="meta">'+esc(label)+'</div>'
+    +'<div class="muted" style="margin-top:9px">It goes back to staging, where you can review, '
+    +'edit or release it again. It has not started, so nothing is lost.</div>'
+    +'<div style="margin-top:20px"><button class="btn pri" onclick="doHold(\''+esc(f)+'\')">hold it</button> '
+    +'<button class="btn" onclick="closeModal()">leave it queued</button></div>');
+}
+function doHold(f){
+  fetch('/api/job/unqueue/'+encodeURIComponent(f),{cache:'no-store'})
+   .then(function(r){return r.json();}).then(function(j){
+     // The encoder may have taken it in the seconds since the page drew - it
+     // says so, and says what to do instead. Show ITS words.
+     openModal('<h3>'+(j.ok?'Held':(j.started?'Already started':'Not held'))+'</h3>'
+       +'<div class="'+(j.ok?'ok':'err')+'">'+esc(j.message||j.error||'')+'</div>');
+     loadProgress();
+   }).catch(function(e){
+     openModal('<h3>Not held</h3><div class="err">no answer from the encoder: '+esc(e.message)+'</div>');
+   });
+}
 
 function loadProgress(){
   Promise.all([
     fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;}),
-    fetch('/api/held',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;})
+    fetch('/api/held',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;}),
+    fetch('/api/queued',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;})
   ]).then(function(res){
     var el = document.getElementById('heldList');
     if(!el) return;
-    var run = runningRows(res[0]), held = heldRows(res[1]);
-    if(!run && !held){ el.innerHTML = '<div class="empty">nothing running or held</div>' + QUEUED_NOTE; return; }
-    el.innerHTML = run + QUEUED_NOTE + held;
+    // RUNNING, then QUEUED, then HELD - the order they will actually happen in.
+    var run = runningRows(res[0]), held = heldRows(res[1]), queued = queuedRows(res[2]);
+    if(!run && !held && !queued){ el.innerHTML = '<div class="empty">nothing running, queued or held</div>'; return; }
+    el.innerHTML = run + queued + held;
   });
 }
 function loadHeld(){ loadProgress(); }
@@ -331,6 +363,13 @@ function drawBatches(){
     if(b.path)h+='<span class="muted">'+esc(b.path)+'</span>';
     h+='<span class="sp" style="flex:1"></span>';
     h+='<select onchange="setProfile('+i+',this.value)">';
+    // A NEUTRAL FIRST OPTION. ⛔ [MEASURED 2026-08-23] With no saved profiles
+    // the list held exactly one entry - "edit or create" - which the browser
+    // therefore had already selected. Selecting what is selected fires no
+    // change event, so clicking it did nothing at all and threw no error.
+    // This option is what the others change FROM.
+    if(!b.profile || b.profile==='__none__')
+      h+='<option value="__none__" selected>(choose a preset\u2026)</option>';
     PROFILES.forEach(function(p){
       h+='<option value="'+esc(p._file)+'"'+(p._file===b.profile?' selected':'')+'>'+esc(p.name)+'</option>';
     });
@@ -355,6 +394,7 @@ function drawBatches(){
 }
 function setProfile(i,f){
   if(f==='__edit__'){ drawBatches(); openEditor(i); return; }
+  if(f==='__none__'){ return; }
   BATCHES[i].profile=f; BATCHES[i].outputs=null; drawBatches();
 }
 
