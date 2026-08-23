@@ -405,13 +405,13 @@ http.createServer((req, res) => {
 
           if (row.top_rung_likely_linked && row.todo === row.top_rung_likely_linked) {
             row.note = (row.note ? row.note + '. ' : '') +
-              'Everything here is already delivered. The ' + row.top_rung_likely_linked +
-              ' outstanding output(s) are 1080p H.264, which is normally LINKED from the ' +
-              'master rather than encoded - so this batch would very likely do no work at all.';
+              row.top_rung_likely_linked + ' output(s) still to make - everything else is ' +
+              'already delivered. They are 1080p H.264: a REAL ENCODE as of 2026-08-23, and ' +
+              'the most expensive rung in the ladder.';
           } else if (row.top_rung_likely_linked) {
             row.note = (row.note ? row.note + '. ' : '') +
-              row.top_rung_likely_linked + ' of the outstanding output(s) are 1080p H.264, ' +
-              'normally linked from the master rather than encoded.';
+              row.top_rung_likely_linked + ' of the outstanding output(s) are 1080p H.264 - ' +
+              'the most expensive rung in the ladder.';
           }
           out.totals.top_rung_likely_linked =
             (out.totals.top_rung_likely_linked || 0) + row.top_rung_likely_linked;

@@ -1,5 +1,5 @@
 {
-  "name": "JMD-BACKLOG",
+  "name": "JMD BACKLOG",
   "description": "Saved from the jobs panel.",
   "order": 50,
   "outputs": [
@@ -9,12 +9,12 @@
       "rungs": [
         1080,
         720,
-        480
+        360
       ],
       "destinations": [
         "pcloud"
       ]
     }
   ],
-  "saved_at": "2026-08-20T19:58:45.696Z"
+  "saved_at": "2026-08-23T16:03:07.038Z"
 }

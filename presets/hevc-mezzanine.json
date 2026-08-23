@@ -1,137 +1,38 @@
 {
-  "name": "HEVC Mezzanine for Vimeo",
+  "name": "HEVC 1080p",
   "codec": "hevc",
   "encoder": "libx265",
-  "preset": "faster",
+  "preset": "medium",
   "pix_fmt": "yuv420p",
   "movflags": "+faststart",
   "tag": "hvc1",
   "frame_rate": "preserve",
   "single_decode": true,
-  "purpose": "ONE 1080p file per movie, uploaded to Vimeo as the source for THEIR encoding ladder. Not watched by customers. Constraint is a predictable byte ceiling: Vimeo bills $400/TB above the 7TB included, and only the master is stored. Capped CRF pins at the ceiling on hard content and comes in UNDER on clean shows, which 2-pass structurally cannot do.",
+  "purpose": "ONE 1080p HEVC file serving BOTH a customer download and the Vimeo ingest. RULED 2026-08-23: separate rates for the two purposes are not worth carrying. At 3.5 Mbps it matched H.264 at 5.0 on five of six clips, and it is roughly a third smaller than the old mezzanine - a direct saving against Vimeo storage.",
+  "device_caveat": "Apple devices from ~2017 and Android play HEVC natively. Windows does NOT ship the decoder - the free VLC player is the remedy, and the portal must say so explicitly rather than gesture at 'some devices'.",
   "measured": {
-    "date": "2026-08-18",
-    "ffmpeg": "n9.0.1-4-gb3ef323dd2-20260817",
-    "host": "Vultr CPU-Optimized 16 vCPU EPYC Genoa, Dallas",
-    "source": "BMDCA2026 BOB Dog Groups, 90s from 30:00 \u2014 worst-lighting show in the library",
-    "presets_compared": {
-      "medium": {
-        "wall_s": 60.95,
-        "speed_x": 1.47,
-        "mb": 51.7,
-        "mbps": 4.59,
-        "cores": 12.17
-      },
-      "fast": {
-        "wall_s": 47.0,
-        "speed_x": 1.92,
-        "mb": 44.4,
-        "mbps": 3.95,
-        "cores": 11.44
-      },
-      "faster": {
-        "wall_s": 36.73,
-        "speed_x": 2.45,
-        "mb": 42.8,
-        "mbps": 3.81,
-        "cores": 11.24
-      },
-      "veryfast": {
-        "wall_s": 36.6,
-        "speed_x": 2.46,
-        "mb": 42.8,
-        "mbps": 3.81,
-        "cores": 11.28
-      }
-    },
-    "finding": "faster chosen. Dr. K compared medium vs faster side by side on two identical screens playing concurrently, on the worst-lighting source in the library, and could detect little to no difference. 1.67x faster than medium. NOTE: x265 CRF is NOT normalised across presets - a faster preset at the same CRF makes cheaper decisions and yields a SMALLER, lower-quality file. The 17% size drop is quality not kept, not efficiency gained. Acceptable here because Vimeo re-encodes the mezzanine into their own ladder. faster and veryfast were identical (36.7 vs 36.6s, same bytes) - something other than the encoder is the floor, so there is nothing below faster to gain.",
-    "concurrency": {
-      "1_job": {
-        "wall_s": 60.6,
-        "speed_x": 1.47,
-        "cores": 12.17
-      },
-      "2_jobs": {
-        "aggregate_x": 1.25,
-        "realtime_x": 1.85,
-        "cores": 14.52
-      },
-      "3_jobs": {
-        "aggregate_x": 1.33,
-        "realtime_x": 1.97,
-        "cores": 15.32
-      },
-      "finding": "Diminishing fast. Third job added 6%. Box at 15.3/16 cores. Preset change (1.67x, free) beats concurrency (1.33x, needs a worker pool). Concurrency DEFERRED."
-    },
-    "full_length_at_medium": {
-      "source": "BOB Finale, 57.3 min",
-      "encode_s": 2508.4,
-      "speed_x": 1.37,
-      "verify_s": 256.7,
-      "mbps": 4.58,
-      "note": "HEVC verify decode is ~15x costlier per file than H.264: 4.3 min for ONE rung vs 92s for FIVE H.264 rungs in parallel."
-    },
-    "encoders_available": "No libsvt_hevc in this build. Software HEVC is libx265 and libkvazaar only; all other HEVC entries are hardware and there is no GPU on this instance. libsvtav1 IS present - AV1 unexplored, and viable for a mezzanine since Vimeo re-encodes and customer device support is irrelevant. Vimeo's acceptance of AV1 as a source is UNVERIFIED."
+    "date": "2026-08-23",
+    "reference": "SDVP_Encoding_Measurements_20260822.pdf",
+    "rate": "3.5 Mbps. HEVC's advantage GROWS with a tighter budget and harder material - 0.03 VMAF points at the easy end, 3.51 at the hard end.",
+    "preset_choice": "medium, changed from faster on 2026-08-23. faster was chosen when this file existed only to be re-encoded by Vimeo and its quality did not need to be kept. It is now a customer download. Measured 2026-08-18: faster is 1.67x quicker and 17% smaller, and that 17% is quality not kept.",
+    "full_length_baseline": "Run 40, 2026-08-23, 99.3 min source: 4.40 Mbps, 3.05 GB, 2.31x realtime under the OLD crf-targeted preset at faster. The ladder rate of 3.5 gives ~2.04 GB."
   },
+  "rate_control": "TARGET RATE. rate_kbps is the average bitrate; maxrate and bufsize bound the peak. crf remains as a fallback for any rung without a rate_kbps.",
   "rungs": [
-    {
-      "height": 1080,
-      "crf": 25,
-      "maxrate": "6M",
-      "bufsize": "12M",
-      "audio_kbps": 160
-    },
-    {
-      "height": 720,
-      "crf": 25,
-      "maxrate": "3650k",
-      "bufsize": "7300k",
-      "audio_kbps": 160,
-      "provisional": true
-    },
-    {
-      "height": 540,
-      "crf": 25,
-      "maxrate": "2350k",
-      "bufsize": "4700k",
-      "audio_kbps": 128,
-      "provisional": true
-    },
-    {
-      "height": 480,
-      "crf": 26,
-      "maxrate": "1650k",
-      "bufsize": "3300k",
-      "audio_kbps": 128,
-      "provisional": true
-    },
-    {
-      "height": 360,
-      "crf": 26,
-      "maxrate": "1M",
-      "bufsize": "2M",
-      "audio_kbps": 96,
-      "provisional": true
-    },
-    {
-      "height": 240,
-      "crf": 27,
-      "maxrate": "600k",
-      "bufsize": "1200k",
-      "audio_kbps": 96,
-      "provisional": true
-    }
+    { "height": 1080, "rate_kbps": 3500, "crf": 25, "maxrate": "4375k", "bufsize": "8750k", "audio_kbps": 160 },
+    { "height": 720,  "crf": 25, "maxrate": "3650k", "bufsize": "7300k", "audio_kbps": 160, "provisional": true },
+    { "height": 540,  "crf": 25, "maxrate": "2350k", "bufsize": "4700k", "audio_kbps": 128, "provisional": true },
+    { "height": 480,  "crf": 26, "maxrate": "1650k", "bufsize": "3300k", "audio_kbps": 128, "provisional": true },
+    { "height": 360,  "crf": 26, "maxrate": "1M",    "bufsize": "2M",    "audio_kbps": 96,  "provisional": true }
   ],
   "rules": {
     "never_upscale": "Skip any rung STRICTLY ABOVE source height.",
-    "master_is_top_rung": "Skip a rung AT source height ONLY when the requested codec equals the master's codec. An H.264 master means 1080p HEVC is a real encode, not a skip.",
-    "apple_playback": "hvc1 tag is REQUIRED. Without it, a technically valid HEVC MP4 will not play on Apple devices."
+    "master_is_never_a_deliverable": "RULED 2026-08-23. See the H.264 preset.",
+    "apple_playback": "hvc1 tag is REQUIRED. Without it a technically valid HEVC MP4 will not play on Apple devices."
   },
   "rung_provenance": {
-    "measured": "1080p ONLY. Measured 2026-08-18 against BMDCA2026 BOB Dog Groups, the worst-lighting show in the library. crf 25 / 6M ceiling.",
-    "derived": "720p and below are DERIVED, NOT MEASURED (2026-08-20). Method: the ratio of HEVC to H.264 ceiling measured at 1080p (0.6667) applied to each H.264 rung ceiling, bufsize held at 2x the ceiling as in both presets, crf shifted by the same +3 measured at 1080p.",
-    "assumption": "That the 1080p HEVC/H.264 ratio holds at lower heights. It probably does NOT hold exactly - HEVC efficiency generally IMPROVES at lower bitrates, so these ceilings are likely CONSERVATIVE and real files should land under them rather than at them. That is the safe direction, and the bitrate band check will catch anything absurd.",
-    "status": "PROVISIONAL. Measure before any 2027 HEVC ladder is used in production.",
-    "derived_on": "2026-08-20T19:25:38.627829Z"
+    "measured": "1080p ONLY.",
+    "derived": "720p and below are DERIVED, NOT MEASURED, and carry no target rate. They exist for a possible 2027 multi-rung HEVC ladder and are tagged provisional in the editor. 240p removed 2026-08-23.",
+    "status": "PROVISIONAL. Measure before any HEVC ladder below 1080p is used in production."
   }
 }

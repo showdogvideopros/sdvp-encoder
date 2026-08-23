@@ -9,15 +9,22 @@
       "rungs": [
         1080,
         720,
-        540,
-        480,
-        360,
-        240
+        360
+      ],
+      "destinations": [
+        "pcloud"
+      ]
+    },
+    {
+      "codec": "hevc",
+      "preset": "hevc-mezzanine",
+      "rungs": [
+        1080
       ],
       "destinations": [
         "pcloud"
       ]
     }
   ],
-  "saved_at": "2026-08-20T19:54:40.883Z"
+  "saved_at": "2026-08-23T16:02:47.754Z"
 }

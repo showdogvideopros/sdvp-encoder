@@ -62,7 +62,7 @@ table.rv th{font-weight:400;font-size:15px;color:#2c4a48}
 </header>
 <main>
   <div class="card" id="heldCard">
-    <h2>Waiting to run</h2>
+    <h2>Jobs in progress</h2>
     <div id="heldList"><div class="empty">nothing held</div></div>
   </div>
 
@@ -110,32 +110,121 @@ function openModal(h){document.getElementById('body').innerHTML=h;document.getEl
 function closeModal(){document.getElementById('modal').classList.remove('on');document.getElementById('body').innerHTML='';}
 document.getElementById('modal').addEventListener('click',function(e){if(e.target.id==='modal')closeModal();});
 
-// ---- HELD JOBS
-function loadHeld(){
-  fetch('/api/held',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
-    var el=document.getElementById('heldList');
-    if(!j.ok||!j.held.length){el.innerHTML='<div class="empty">nothing held</div>';return;}
-    var h='';
-    // THE QUEUE TOTAL. One night or three days - that is the question this
-    // list has to answer before anything is released.
-    if(j.queue&&j.held.length>1){
-      h+='<div class="sum" style="margin-bottom:12px"><b>If you start everything: '
-        +esc(j.queue.range)+'</b> &nbsp;<span class="muted">\u2014 they run back to back, '
-        +'in the order they were built. Films already at their destination are skipped, '
-        +'so a queue with much in place finishes under the low end.</span></div>';
-    }
-    j.held.forEach(function(x){
-      h+='<div class="row"><div class="nm"><b>'+esc(x.label)+'</b>'
-        +'<div class="muted">'+x.films+' file'+(x.films===1?'':'s')+' in '+x.batches+' batch'+(x.batches===1?'':'es')
-        +' &middot; built '+esc(dt(x.built_at))
-        +(x.estimate?' &middot; <b>'+esc(x.estimate.range)+'</b>':'')+'</div></div>'
-        +'<button class="btn pri" onclick="release(\''+esc(x.file)+'\')">start</button>'
-        +'<button class="btn" onclick="editHeld(\''+esc(x.file)+'\')">review &amp; edit</button>'
-        +'<button class="btn dim" onclick="discard(\''+esc(x.file)+'\',\''+esc(x.label)+'\')">discard</button></div>';
-    });
-    el.innerHTML=h;
-  }).catch(function(){});
+// ---- JOBS IN PROGRESS
+// One panel, three states: running, queued, held. Job control lives HERE and
+// not on the run card, so there is exactly one place a job can be acted on and
+// one place to keep fresh. Polled, never rendered once - a stale page must not
+// offer STOP on a run that ended ten minutes ago.
+var PHASE_WORDS = { FETCHING:'downloading the master', PROBING:'reading the master',
+  PLANNING:'working out the ladder', ENCODING:'encoding', VERIFYING:'checking the files',
+  UPLOADING:'delivering', CLEANING:'tidying up' };
+
+function elapsed(iso){
+  if(!iso) return '';
+  var s = Math.max(0, (Date.now() - new Date(iso).getTime())/1000);
+  var h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return h ? (h+'h '+m+'m') : (m+'m');
 }
+
+function runningRows(st){
+  var runs = (st && st.runs) || [];
+  var live = runs.filter(function(r){ return !r.finished_at && r.status === 'RUNNING'; });
+  if(!live.length) return '';
+  var h = '';
+  live.forEach(function(r){
+    (r.items || []).forEach(function(it){
+      if(it.phase === 'DONE' || it.phase === 'FAILED') return;
+      var pct = (it.progress && it.progress.pct) || 0;
+      var word = PHASE_WORDS[it.phase] || String(it.phase || '').toLowerCase();
+      h += '<div class="row"><div class="nm"><b>'+esc(it.name || r.job_label)+'</b>'
+        +'<div class="muted"><span class="tag b">running</span> '+esc(word)
+        +' &middot; '+pct.toFixed(0)+'% &middot; '+esc(elapsed(r.started_at))+' elapsed'
+        +' &middot; '+esc(r.job_label)+'</div></div>'
+        +'<button class="btn dim" disabled title="Needs the resume check before it is safe - a paused job would re-encode films it already finished.">pause</button>'
+        +'<button class="btn" onclick="askStop()">stop</button>'
+        +'<button class="btn warn" onclick="askAbort()">abort</button></div>';
+    });
+  });
+  return h;
+}
+
+function askStop(){
+  openModal('<h3>Stop after this film?</h3>'
+    +'<div class="muted" style="margin-top:9px">The film being encoded now finishes and is delivered. '
+    +'Nothing after it starts. The job is done - a stopped run is re-made as a fresh job, never resumed.</div>'
+    +'<div style="margin-top:20px"><button class="btn pri" onclick="doStop()">stop after this film</button> '
+    +'<button class="btn" onclick="closeModal()">keep going</button></div>');
+}
+function doStop(){
+  fetch('/api/stop',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
+    openModal('<h3>'+(j.ok?'Stopping':'Not stopped')+'</h3><div class="'+(j.ok?'ok':'err')+'">'
+      +esc(j.message||j.error||'')+'</div>');
+    loadProgress();
+  }).catch(function(e){
+    openModal('<h3>Not stopped</h3><div class="err">no answer from the encoder: '+esc(e.message)+'</div>');
+  });
+}
+function askAbort(){
+  openModal('<h3>Abort now?</h3>'
+    +'<div class="muted" style="margin-top:9px">The encode is killed immediately and the part-file is discarded. '
+    +'Work done on this film is lost. Files already delivered are untouched.</div>'
+    +'<div style="margin-top:20px"><button class="btn warn" onclick="doAbort()">abort now</button> '
+    +'<button class="btn" onclick="closeModal()">keep going</button></div>');
+}
+function doAbort(){
+  fetch('/api/abort',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
+    // The daemon refuses an abort mid-upload and explains why. Show ITS words -
+    // duplicating that reasoning here would mean two places to keep true.
+    openModal('<h3>'+(j.ok?'Aborting':'Not aborted')+'</h3><div class="'+(j.ok?'ok':'err')+'">'
+      +esc(j.message||j.error||'')+'</div>');
+    loadProgress();
+  }).catch(function(e){
+    openModal('<h3>Not aborted</h3><div class="err">no answer from the encoder: '+esc(e.message)+'</div>');
+  });
+}
+
+function heldRows(j){
+  if(!j || !j.ok || !j.held.length) return '';
+  var h = '';
+  if(j.queue && j.held.length > 1){
+    h += '<div class="sum" style="margin:12px 0"><b>If you start everything: '
+      +esc(j.queue.range)+'</b> &nbsp;<span class="muted">\u2014 they run back to back, '
+      +'in the order they were built. Films already at their destination are skipped, '
+      +'so a queue with much in place finishes under the low end.</span></div>';
+  }
+  j.held.forEach(function(x){
+    h += '<div class="row"><div class="nm"><b>'+esc(x.label)+'</b>'
+      +'<div class="muted"><span class="tag g">held</span> '+x.films+' file'+(x.films===1?'':'s')
+      +' in '+x.batches+' batch'+(x.batches===1?'':'es')
+      +' &middot; built '+esc(dt(x.built_at))
+      +(x.estimate?' &middot; <b>'+esc(x.estimate.range)+'</b>':'')+'</div></div>'
+      +'<button class="btn pri" onclick="release(\''+esc(x.file)+'\')">start</button>'
+      +'<button class="btn" onclick="editHeld(\''+esc(x.file)+'\')">review &amp; edit</button>'
+      +'<button class="btn dim" onclick="discard(\''+esc(x.file)+'\',\''+esc(x.label)+'\')">discard</button></div>';
+  });
+  return h;
+}
+
+// QUEUED JOBS ARE NOT LISTED YET. They are .json files in the intake folder and
+// no route reports them, so HOLD has nothing to act on from here. Named plainly
+// rather than left as an empty space that looks like "nothing queued".
+var QUEUED_NOTE = '<div class="muted" style="margin:12px 0 4px">'
+  +'Jobs already sent and waiting their turn are not listed here yet.</div>';
+
+function loadProgress(){
+  Promise.all([
+    fetch('/api/state',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;}),
+    fetch('/api/held',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;})
+  ]).then(function(res){
+    var el = document.getElementById('heldList');
+    if(!el) return;
+    var run = runningRows(res[0]), held = heldRows(res[1]);
+    if(!run && !held){ el.innerHTML = '<div class="empty">nothing running or held</div>' + QUEUED_NOTE; return; }
+    el.innerHTML = run + QUEUED_NOTE + held;
+  });
+}
+function loadHeld(){ loadProgress(); }
+
 function release(f){
   fetch('/api/held/release/'+encodeURIComponent(f),{cache:'no-store'})
    .then(function(r){return r.json();}).then(function(j){
@@ -771,15 +860,15 @@ function preflight(){
      } else if(todo===0){
        cls='sum'; head='<b>Everything in this job is already delivered.</b> Running it would do no work.';
      } else if(linked && todo===linked){
-       cls='sum'; head='<b>Everything is already delivered.</b> The '+linked+' outstanding output'
-           +(linked===1?'':'s')+' '+(linked===1?'is':'are')+' 1080p H.264, normally linked from the master rather than encoded \u2014 so this would very likely do no work.';
+       cls='sum'; head='<b>'+linked+' output'+(linked===1?'':'s')+' still to make.</b> '
+           +'Everything else is already delivered. '+(linked===1?'It is':'They are')+' 1080p H.264 \u2014 a real encode as of 2026-08-23, and the most expensive rung in the ladder.';
      } else if(present){
        cls='sum'; head='<b>'+todo+' of '+outs+' output'+(outs===1?'':'s')+' still to make.</b> '
            +present+' '+(present===1?'is':'are')+' already at the destination and would be skipped.'
-           +(linked?' '+linked+' of those outstanding '+(linked===1?'is':'are')+' 1080p H.264, normally linked rather than encoded.':'');
+           +(linked?' '+linked+' of those '+(linked===1?'is':'are')+' 1080p H.264 \u2014 the most expensive rung in the ladder.':'');
      } else {
        cls='sum'; head='<b>All '+outs+' output'+(outs===1?'':'s')+' still to make.</b> Nothing is at the destination yet.'
-           +(linked?' '+linked+' '+(linked===1?'is':'are')+' 1080p H.264, normally linked rather than encoded.':'');
+           +(linked?' '+linked+' '+(linked===1?'is':'are')+' 1080p H.264 \u2014 the most expensive rung in the ladder.':'');
      }
      h+='<div class="'+cls+'">'+head;
      (j.batches||[]).forEach(function(b){

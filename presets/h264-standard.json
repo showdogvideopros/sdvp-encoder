@@ -1,5 +1,5 @@
 {
-  "name": "H.264 Standard Ladder",
+  "name": "H.264 Delivery Ladder",
   "codec": "h264",
   "encoder": "libx264",
   "preset": "slow",
@@ -8,34 +8,23 @@
   "frame_rate": "preserve",
   "single_decode": true,
   "measured": {
-    "date": "2026-08-17",
-    "ffmpeg": "n9.0.1-4-gb3ef323dd2-20260817",
-    "host": "Vultr CPU-Optimized 16 vCPU EPYC Genoa, Dallas",
-    "sources": [
-      { "show": "FCRSA2026", "file": "DOGS NONREGULAR", "lighting": "excellent (Purina)",
-        "src_mbps": 10.39, "rungs_mbps": {"720":2.93,"540":1.90,"480":1.43,"360":0.94},
-        "speed_x": 2.37 },
-      { "show": "BTCA2026", "file": "NATIONAL BOB BITCHES @30%", "lighting": "poor, variable, noisy",
-        "src_mbps": 10.59, "rungs_mbps": {"720":3.43,"540":2.25,"480":1.68,"360":1.12},
-        "speed_x": 2.16 },
-      { "show": "BTCA2026", "file": "NATIONAL BOB BITCHES @65%", "lighting": "poor, variable, noisy",
-        "src_mbps": 10.52, "rungs_mbps": {"720":3.16,"540":2.06,"480":1.53,"360":1.02},
-        "speed_x": 2.33 }
-    ],
-    "finding": "Spread across best and worst lighting under 20%. Caps never engaged. One CRF setting covers the full range; no per-show tuning required. Predicted 4-6 Mbps on noisy source; measured 3.16-3.43. Prediction FAILED — master's own 10 Mbps VBR pass plus the downscale remove most grain before x264 sees it."
+    "date": "2026-08-23",
+    "reference": "SDVP_Encoding_Measurements_20260822.pdf",
+    "ladder": "Derived from ~60 measured encodes across three venues, two codecs and six heights, VMAF proven both ways, two human observers. 540p, 480p and 240p were REMOVED: measured against a 1080p screen they are dominated at every file size by the rung above. They are not cheaper options, they are worse options that happen to be smaller.",
+    "rates": "1080p 5.0 Mbps scores 91.7 on the hardest clip in the library at 48-51% of the master's size. 720p 2.75 Mbps scores 92.6 on a 720p screen. 360p 600 kbps scores 86.9 on a 360p screen - the emergency rung was never dominated, it was previously configured at a size where it had no business competing.",
+    "full_length_baseline": "Run 40, 2026-08-23, MONDAY DOGS REG AND NONREG BTCA2026, 99.3 min. Under the OLD crf-targeted presets the 720p rung produced 4.23 Mbps at 77% of its 5500k ceiling - not the 2.9-3.4 Mbps the previous clip-derived note predicted. Ceilings DO shape a full-length encode. This is why the ladder is now rate-targeted."
   },
+  "rate_control": "TARGET RATE. rate_kbps is the average bitrate; maxrate and bufsize bound the peak. crf remains as a fallback for any rung without a rate_kbps.",
   "rungs": [
-    { "height": 1080, "crf": 22, "maxrate": "9M",    "bufsize": "18M", "audio_kbps": 160 },
-    { "height": 720,  "crf": 22, "maxrate": "5500k", "bufsize": "11M", "audio_kbps": 160 },
-    { "height": 540,  "crf": 22, "maxrate": "3500k", "bufsize": "7M",  "audio_kbps": 128 },
-    { "height": 480,  "crf": 23, "maxrate": "2500k", "bufsize": "5M",  "audio_kbps": 128 },
-    { "height": 360,  "crf": 23, "maxrate": "1500k", "bufsize": "3M",  "audio_kbps": 96  },
-    { "height": 240,  "crf": 24, "maxrate": "900k",  "bufsize": "1800k","audio_kbps": 96 }
+    { "height": 1080, "rate_kbps": 5000, "crf": 22, "maxrate": "6250k", "bufsize": "12500k", "audio_kbps": 160 },
+    { "height": 720,  "rate_kbps": 2750, "crf": 22, "maxrate": "3450k", "bufsize": "6900k",  "audio_kbps": 160 },
+    { "height": 360,  "rate_kbps": 600,  "crf": 23, "maxrate": "900k",  "bufsize": "1800k",  "audio_kbps": 96  }
   ],
   "rules": {
     "never_upscale": "Skip any rung STRICTLY ABOVE source height. Report SKIPPED (blue), not FAILED (red).",
-    "master_is_top_rung": "Skip a rung AT source height ONLY when the requested codec equals the master's codec. The master is linked in place, never re-encoded. Consequence: a 1080p H.264 master yields FIVE H.264 rungs but SIX HEVC rungs, because no HEVC master exists.",
+    "master_is_never_a_deliverable": "RULED 2026-08-23. The master is an encoding source and an archive, never a customer download. Every file a customer receives is produced here. The former master_is_top_rung skip is retired.",
     "aspect": "Scale by height with -2 width. Preserve source aspect. No padding.",
-    "rejected": "2-pass VBR — 61% slower than CRF and produced a LARGER file at equal quality. Measured, not assumed."
+    "top_rung_is_derived": "The 1080p rate is reduced per film so the file stays under 4 GiB, and the rung is REFUSED below 3500 kbps - past about 152 minutes, where 720p plus the HEVC rung carry the film instead.",
+    "rejected_2pass": "2-pass VBR rejected at THIS stage 2026-08-23: the production master is itself 2-pass from autumn 2026, so the bit reallocation has already happened upstream. Doubling encode time to repeat it is paying twice for one insight."
   }
 }

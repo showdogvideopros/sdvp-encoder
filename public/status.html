@@ -18,6 +18,9 @@ main{padding:22px;max-width:1400px;margin:0 auto}
 .card{background:#fff;border:1px solid var(--line);border-radius:9px;padding:20px 22px;margin-bottom:18px}
 .card h2{font-size:22px;margin:0 0 4px;font-weight:600}
 .meta{font-size:17px;color:#3f5b59;margin-bottom:12px}
+.runline{padding:11px 14px;margin-bottom:7px;border:1px solid #cfe0de;border-radius:8px;background:#fbfdfd;cursor:pointer;font-size:17px;color:#15302f}
+.runline:hover{background:#f0f7f6;border-color:#9ec4c0}
+.runline.bad{border-left:4px solid #b4453c}
 .bar{height:26px;background:#e6eeec;border-radius:13px;overflow:hidden;margin:12px 0 6px}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .4s}
 .stats{font-size:18px;color:#2c4a48;display:flex;gap:24px;flex-wrap:wrap}
@@ -159,8 +162,27 @@ function remaining(r){
     if(it.phase==='DONE'||it.phase==='FAILED'){ doneB+=b; anyDone=true; }
     else if(it.phase==='QUEUED'){ leftB+=b; }
     else {
-      // in flight: credit the fraction its progress bar reports
+      // in flight: credit the fraction its progress bar reports - ACROSS ALL
+      // PASSES. ⛔ [MEASURED 2026-08-23, run 41] Each output is its own ffmpeg
+      // run, so the bar fills, RESETS TO ZERO and fills again. The projection
+      // read that reset as the film losing 98% of its progress and reported
+      // 13 hours left on a run with about one hour to go. Overall progress is
+      // the passes already ENCODED plus the fraction of the live one.
+      // ⚠ Passes are weighted EQUALLY and they are not equal - an HEVC pass
+      // costs more than an H.264 pass of the same film. Approximate on
+      // purpose; a weighting needs runs to derive it from.
       var pct=Math.max(0,Math.min(100,(it.progress&&it.progress.pct)||0));
+      var outs=it.outputs||[];
+      if(outs.length>1 && it.phase==='ENCODING'){
+        var nDoneP=0, liveP=0;
+        outs.forEach(function(o){
+          var rs=o.rungs||[];
+          var anyPlanned=rs.some(function(x){return x.state==='PLANNED';});
+          if(o.encoding) liveP=pct/100;
+          else if(rs.length && !anyPlanned) nDoneP++;
+        });
+        pct=((nDoneP+liveP)/outs.length)*100;
+      }
       doneB+=b*pct/100; leftB+=b*(1-pct/100);
     }
   });
@@ -220,7 +242,17 @@ function card(it){
   var p=it.progress||{};
   var h='<div class="card"><h2>'+esc(it.name||'(fetching…)')+' <span class="phase '+esc(it.phase)+'">'+esc(it.phase)+'</span></h2>';
   h+='<div class="meta">'+esc(it.batch)+' &middot; '+mb(it.bytes)+(it.probe?' &middot; '+it.probe.width+'&times;'+it.probe.height+' '+esc(it.probe.video_codec)+' &middot; '+(it.probe.duration_s/60).toFixed(1)+' min':'')+'</div>';
-  h+='<div style="font-size:16px;color:#3f5b59;margin-top:6px">'+esc(p.label||'')+'</div>';
+  // NAME THE CODEC AND THE PASS. Each output is a SEPARATE ffmpeg run - the
+  // three H.264 rungs share one decode, then HEVC runs again from scratch. The
+  // bar therefore fills, resets to zero and fills again, and without this the
+  // reader has no way to tell which pass they are watching.
+  var lbl = esc(p.label||'');
+  var outs = it.outputs||[], live = -1;
+  for (var oi=0; oi<outs.length; oi++) if (outs[oi].encoding) live = oi;
+  if (live >= 0 && lbl === 'encoding')
+    lbl = 'encoding ' + esc(outs[live].codec) +
+          (outs.length > 1 ? '  \u00b7  pass ' + (live+1) + ' of ' + outs.length : '');
+  h+='<div style="font-size:16px;color:#3f5b59;margin-top:6px">'+lbl+'</div>';
   h+='<div class="bar"><i style="width:'+(p.pct||0).toFixed(1)+'%"></i></div>';
   h+='<div class="stats"><span>'+(p.pct||0).toFixed(0)+' percent</span><span>speed '+(p.speed_x||0).toFixed(2)+'x</span><span>eta '+fmt(p.eta_s)+'</span>';
   if(it.timings){var t=it.timings;h+='<span>fetch '+fmt(t.fetch_s)+'</span><span>encode '+fmt(t.encode_s)+'</span><span>verify '+fmt(t.verify_s)+'</span><span>upload '+fmt(t.upload_s)+'</span>';}
@@ -253,7 +285,9 @@ function card(it){
   if(it.scratch_retained)h+='<div class="reason">scratch retained for inspection</div>';
   return h+'</div>';
 }
+var LAST_STATE=null;
 function draw(s){
+  LAST_STATE=s;
   LAST=s;   // the report compares the record against exactly this snapshot
   // The stop controls exist only while a run is in flight. A stop button with
   // nothing to stop is clutter, and clutter in that corner trains the eye to
@@ -274,28 +308,9 @@ function draw(s){
   document.getElementById('stamp').textContent=new Date(s.updated_at).toLocaleTimeString();
   var runs=s.runs||[];
   if(!runs.length){m.innerHTML='<div class="empty">no runs yet — drop a job file to begin</div>';return;}
-  var h='';
-  runs.forEach(function(r){
-    var rn=(r.run_number!=null?'Run #'+r.run_number+' \u00b7 ':'');var rt=r.started_at?new Date(r.started_at).toLocaleTimeString():'';
-    var rf=r.finished_at?new Date(r.finished_at).toLocaleTimeString():'';
-    var rel='';
-    if(r.started_at){
-      var endMs=r.finished_at?new Date(r.finished_at).getTime():Date.now();
-      var mins=(endMs-new Date(r.started_at).getTime())/60000;
-      if(mins>=0)rel=(mins<90?mins.toFixed(0)+' min':(mins/60).toFixed(1)+' h')+(r.finished_at?'':' so far');
-    }
-    var rtime=rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:'');var all=(r.items||[]);var nDone=all.filter(function(x){return x.phase==='DONE';}).length;var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;var tally=all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'';h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'+rn+esc(r.job_label)+tally+' \u00b7 '+rtime+remaining(r)+' \u00b7 '+esc(r.status)+repBtn(r)+'</div>';
-    var items=(r.items||[]).slice();
-    var DONE={DONE:1,FAILED:1};
-    function bucket(it){ if(it.phase==='QUEUED') return 1; if(DONE[it.phase]) return 2; return 0; }
-    items.forEach(function(it,ix){it.__ix=ix;});
-    items.sort(function(a,b){
-      var ba=bucket(a), bb=bucket(b);
-      if(ba!==bb) return ba-bb;
-      return ba===2 ? b.__ix-a.__ix : a.__ix-b.__ix;
-    });
-    items.forEach(function(it){h+=card(it);});
-  });
+  RUNS_BY_ID={};
+  runs.forEach(function(r){ RUNS_BY_ID[r.run_id]=r; });
+  var h=drawRuns(runs);
   m.innerHTML=h;
 }
 function closeModal(){document.getElementById('sdvpModal').classList.remove('on');
@@ -661,6 +676,93 @@ function buildReport(j,num){
     +' \u00b7 status '+esc(run.status||'\u2014')+'</div>';
   return h;
 }
+// ---- RUN LIST
+// THE NEWEST RUN IS EXPANDED. Every older one collapses to a clickable line,
+// whatever its status - a failed run gets no special treatment, because the
+// rule "newest is open" is predictable and "open if something went wrong" is
+// not. A backlog run carries 20-30 film cards; forty of those stacked is the
+// mess this replaces. Ten lines show by default, the rest behind a toggle.
+var RUNS_BY_ID = {};
+var SHOW_ALL_RUNS = false;
+var RECENT_LINES = 10;
+
+function sortItems(r){
+  var items=(r.items||[]).slice();
+  var DONE={DONE:1,FAILED:1};
+  function bucket(it){ if(it.phase==='QUEUED') return 1; if(DONE[it.phase]) return 2; return 0; }
+  items.forEach(function(it,ix){it.__ix=ix;});
+  items.sort(function(a,b){
+    var ba=bucket(a), bb=bucket(b);
+    if(ba!==bb) return ba-bb;
+    return ba===2 ? b.__ix-a.__ix : a.__ix-b.__ix;
+  });
+  return items;
+}
+
+function runHeadBits(r){
+  var rn=(r.run_number!=null?'Run #'+r.run_number+' \u00b7 ':'');
+  var rt=r.started_at?new Date(r.started_at).toLocaleTimeString():'';
+  var rf=r.finished_at?new Date(r.finished_at).toLocaleTimeString():'';
+  var rel='';
+  if(r.started_at){
+    var endMs=r.finished_at?new Date(r.finished_at).getTime():Date.now();
+    var mins=(endMs-new Date(r.started_at).getTime())/60000;
+    if(mins>=0)rel=(mins<90?mins.toFixed(0)+' min':(mins/60).toFixed(1)+' h')+(r.finished_at?'':' so far');
+  }
+  var all=(r.items||[]);
+  var nDone=all.filter(function(x){return x.phase==='DONE';}).length;
+  var nFail=all.filter(function(x){return x.phase==='FAILED';}).length;
+  return { rn: rn,
+    time: rt+(rf?' \u2192 '+rf:'')+(rel?' \u00b7 '+rel:''),
+    tally: all.length?(' \u00b7 '+nDone+' of '+all.length+' complete'+(nFail?' \u00b7 '+nFail+' FAILED':'')):'',
+    failed: nFail>0 };
+}
+
+function openRun(id){
+  var r=RUNS_BY_ID[id];
+  if(!r){ openModal('Run','<div class="meta">that run is no longer in the state file</div>'); return; }
+  var b=runHeadBits(r);
+  var h='<div class="meta" style="font-size:19px">'+esc(r.status)+b.tally+' \u00b7 '+esc(b.time)+'</div>';
+  var items=sortItems(r);
+  if(!items.length) h+='<div class="empty">no films recorded on this run</div>';
+  else items.forEach(function(it){ h+=card(it); });
+  openModal(b.rn.replace(/ \u00b7 $/,'')+' \u2014 '+(r.job_label||''), h);
+}
+
+function toggleAllRuns(){ SHOW_ALL_RUNS=!SHOW_ALL_RUNS; if(LAST_STATE) draw(LAST_STATE); }
+
+function drawRuns(runs){
+  var h='';
+  // NEWEST FIRST, expanded. state.runs is already newest-first.
+  var live=runs[0];
+  if(live){
+    var b=runHeadBits(live);
+    h+='<div class="meta" style="margin:22px 0 9px;font-size:21px;color:#15302f">'
+      +b.rn+esc(live.job_label)+b.tally+' \u00b7 '+esc(b.time)+remaining(live)+' \u00b7 '
+      +esc(live.status)+repBtn(live)+'</div>';
+    sortItems(live).forEach(function(it){ h+=card(it); });
+  }
+  var rest=runs.slice(1);
+  if(!rest.length) return h;
+  var shown = SHOW_ALL_RUNS ? rest : rest.slice(0, RECENT_LINES);
+  h+='<div class="meta" style="margin:34px 0 9px;font-size:19px;color:#15302f">'
+    +'earlier runs <span style="font-weight:400;color:#3f5b59">'
+    +'\u2014 click one to see its films</span></div>';
+  shown.forEach(function(r){
+    var b=runHeadBits(r);
+    h+='<div class="runline'+(b.failed?' bad':'')+'" onclick="openRun(\''+esc(r.run_id)+'\')">'
+      +'<b>'+esc(b.rn.replace(/ \u00b7 $/,''))+'</b> &middot; '+esc(r.job_label||'')
+      +'<div class="muted" style="font-size:15px;margin-top:3px">'
+      +esc(r.status)+b.tally+' \u00b7 '+esc(b.time)+'</div></div>';
+  });
+  if(rest.length > RECENT_LINES){
+    h+='<div style="margin-top:12px"><button class="btn" onclick="toggleAllRuns()">'
+      +(SHOW_ALL_RUNS ? 'show only the last '+RECENT_LINES
+                      : 'show all '+rest.length+' earlier runs')+'</button></div>';
+  }
+  return h;
+}
+
 function tick(){
   // Verdicts first, then state. A verdicts failure must not stop the page
   // drawing - the buttons simply render neutral until the next cycle.
