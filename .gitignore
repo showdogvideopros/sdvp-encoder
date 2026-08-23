@@ -27,3 +27,4 @@ scratch/
 *.db
 *.db-wal
 *.db-shm
+_attic/
