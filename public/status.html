@@ -174,14 +174,21 @@ function remaining(r){
       var pct=Math.max(0,Math.min(100,(it.progress&&it.progress.pct)||0));
       var outs=it.outputs||[];
       if(outs.length>1 && it.phase==='ENCODING'){
-        var nDoneP=0, liveP=0;
+        // WEIGHTED BY MEASURED COST, not 50/50. [MEASURED 2026-08-24, run 45,
+        // 10 films spanning 16-133 min] the H.264 pass is 44% of a film's encode
+        // time and HEVC 56%. Treating them as equal made the estimate read ~16%
+        // optimistic mid-HEVC, because the harder pass was credited as half done.
+        var W={h264:0.44, hevc:0.56};
+        var tot=0, got=0;
         outs.forEach(function(o){
+          var w=W[o.codec]!=null?W[o.codec]:(1/outs.length);
+          tot+=w;
           var rs=o.rungs||[];
           var anyPlanned=rs.some(function(x){return x.state==='PLANNED';});
-          if(o.encoding) liveP=pct/100;
-          else if(rs.length && !anyPlanned) nDoneP++;
+          if(o.encoding) got+=w*(pct/100);
+          else if(rs.length && !anyPlanned) got+=w;
         });
-        pct=((nDoneP+liveP)/outs.length)*100;
+        pct = tot>0 ? (got/tot)*100 : pct;
       }
       doneB+=b*pct/100; leftB+=b*(1-pct/100);
     }
