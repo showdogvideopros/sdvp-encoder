@@ -19,16 +19,52 @@
   },
   "rate_control": "TARGET RATE. rate_kbps is the average bitrate; maxrate and bufsize bound the peak. crf remains as a fallback for any rung without a rate_kbps.",
   "rungs": [
-    { "height": 1080, "rate_kbps": 3500, "crf": 25, "maxrate": "4375k", "bufsize": "8750k", "audio_kbps": 160 },
-    { "height": 720,  "crf": 25, "maxrate": "3650k", "bufsize": "7300k", "audio_kbps": 160, "provisional": true },
-    { "height": 540,  "crf": 25, "maxrate": "2350k", "bufsize": "4700k", "audio_kbps": 128, "provisional": true },
-    { "height": 480,  "crf": 26, "maxrate": "1650k", "bufsize": "3300k", "audio_kbps": 128, "provisional": true },
-    { "height": 360,  "crf": 26, "maxrate": "1M",    "bufsize": "2M",    "audio_kbps": 96,  "provisional": true }
+    {
+      "height": 1080,
+      "rate_kbps": 3500,
+      "crf": 25,
+      "maxrate": "4375k",
+      "bufsize": "8750k",
+      "audio_kbps": 160
+    },
+    {
+      "height": 720,
+      "crf": 25,
+      "maxrate": "3650k",
+      "bufsize": "7300k",
+      "audio_kbps": 160,
+      "provisional": true
+    },
+    {
+      "height": 540,
+      "crf": 25,
+      "maxrate": "2350k",
+      "bufsize": "4700k",
+      "audio_kbps": 128,
+      "provisional": true
+    },
+    {
+      "height": 480,
+      "crf": 26,
+      "maxrate": "1650k",
+      "bufsize": "3300k",
+      "audio_kbps": 128,
+      "provisional": true
+    },
+    {
+      "height": 360,
+      "crf": 26,
+      "maxrate": "1M",
+      "bufsize": "2M",
+      "audio_kbps": 96,
+      "provisional": true
+    }
   ],
   "rules": {
     "never_upscale": "Skip any rung STRICTLY ABOVE source height.",
     "master_is_never_a_deliverable": "RULED 2026-08-23. See the H.264 preset.",
-    "apple_playback": "hvc1 tag is REQUIRED. Without it a technically valid HEVC MP4 will not play on Apple devices."
+    "apple_playback": "hvc1 tag is REQUIRED. Without it a technically valid HEVC MP4 will not play on Apple devices.",
+    "rung_is_derived": "RULED 2026-08-25. The 1080p HEVC rate is reduced per film so the file stays under 4 GiB, capped at 3500 and REFUSED below 2500 kbps - past about 205 minutes. Before this, HEVC ran at a FIXED 3500 and crossed 4 GiB past ~152 min, while the H.264 rung was being refused for exceeding the same ceiling. Both rungs now make the same promise: NO FILE EXCEEDS 4 GiB."
   },
   "rung_provenance": {
     "measured": "1080p ONLY.",

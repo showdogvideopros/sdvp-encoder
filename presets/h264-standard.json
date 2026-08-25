@@ -16,15 +16,36 @@
   },
   "rate_control": "TARGET RATE. rate_kbps is the average bitrate; maxrate and bufsize bound the peak. crf remains as a fallback for any rung without a rate_kbps.",
   "rungs": [
-    { "height": 1080, "rate_kbps": 5000, "crf": 22, "maxrate": "6250k", "bufsize": "12500k", "audio_kbps": 160 },
-    { "height": 720,  "rate_kbps": 2750, "crf": 22, "maxrate": "3450k", "bufsize": "6900k",  "audio_kbps": 160 },
-    { "height": 360,  "rate_kbps": 600,  "crf": 23, "maxrate": "900k",  "bufsize": "1800k",  "audio_kbps": 96  }
+    {
+      "height": 1080,
+      "rate_kbps": 5000,
+      "crf": 22,
+      "maxrate": "6250k",
+      "bufsize": "12500k",
+      "audio_kbps": 160
+    },
+    {
+      "height": 720,
+      "rate_kbps": 2750,
+      "crf": 22,
+      "maxrate": "3450k",
+      "bufsize": "6900k",
+      "audio_kbps": 160
+    },
+    {
+      "height": 360,
+      "rate_kbps": 600,
+      "crf": 23,
+      "maxrate": "900k",
+      "bufsize": "1800k",
+      "audio_kbps": 96
+    }
   ],
   "rules": {
     "never_upscale": "Skip any rung STRICTLY ABOVE source height. Report SKIPPED (blue), not FAILED (red).",
     "master_is_never_a_deliverable": "RULED 2026-08-23. The master is an encoding source and an archive, never a customer download. Every file a customer receives is produced here. The former master_is_top_rung skip is retired.",
     "aspect": "Scale by height with -2 width. Preserve source aspect. No padding.",
-    "top_rung_is_derived": "The 1080p rate is reduced per film so the file stays under 4 GiB, and the rung is REFUSED below 3500 kbps - past about 152 minutes, where 720p plus the HEVC rung carry the film instead.",
+    "top_rung_is_derived": "The 1080p rate is reduced per film so the file stays under 4 GiB, capped at 5000 and REFUSED below 3500 kbps - past 148.6 minutes, where 720p and the HEVC rung carry the film. [MEASURED 2026-08-25 against the live constants.] This threshold MOVES with the reserve: it was 152 min at a 3% reserve and is 148.6 at 5%. Recompute it rather than quoting this number after any change.",
     "rejected_2pass": "2-pass VBR rejected at THIS stage 2026-08-23: the production master is itself 2-pass from autumn 2026, so the bit reallocation has already happened upstream. Doubling encode time to repeat it is paying twice for one insight."
   }
 }
