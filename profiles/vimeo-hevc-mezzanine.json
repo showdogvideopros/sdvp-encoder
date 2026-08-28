@@ -1,0 +1,19 @@
+{
+  "name": "VIMEO HEVC MEZZANINE",
+  "description": "Saved from the jobs panel.",
+  "order": 50,
+  "outputs": [
+    {
+      "codec": "hevc",
+      "preset": "hevc-mezzanine",
+      "rungs": [
+        1080
+      ],
+      "destinations": [
+        "vimeo"
+      ],
+      "vimeo_folder": "/users/63409012/projects/30265459"
+    }
+  ],
+  "saved_at": "2026-08-26T23:25:17.343Z"
+}
