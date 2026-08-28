@@ -839,6 +839,13 @@ http.createServer((req, res) => {
   // reads amber from its first minute and the colour stops meaning anything.
   function runVerdict(R, rid) {
     const q1 = (s, p) => R.query(s, p)[0] || {};
+    // AN UNFINISHED RUN IS NOT A FAILED RUN. Same principle as the halted
+    // film below: red is for work that did not happen, not for work that has
+    // not happened YET. [MEASURED 2026-08-28, run 48] a healthy 6-film run in
+    // flight read 'Vimeo FAIL - 0 of 6 confirmed' because the witness asks ~2s
+    // after upload while Vimeo was still transcoding, and told the reader that
+    // 22 films which had simply NOT STARTED 'must be re-run'.
+    const runOpen = !q1('SELECT finished_at FROM runs WHERE run_id = ?', [rid]).finished_at;
     // ⛔ A FILM HALTED BY THE OPERATOR IS NOT A FAILED FILM. [MEASURED
     // 2026-08-21] runs 22, 28 and 34 all read FAIL for the single reason that
     // a button was pressed; run 23 read PASS only because its film happened to
@@ -930,7 +937,8 @@ http.createServer((req, res) => {
     if (jobN !== null) {
       const recN = num(q1('SELECT COUNT(*) AS c FROM movies WHERE run_id=?', [rid]).c);
       if (jobN > recN) {
-        findings.push({ k: 'films in job, not in record', n: jobN - recN, sev: 'CHECK' });
+        findings.push({ k: runOpen ? 'films not started yet' : 'films in job, not in record',
+                        n: jobN - recN, sev: 'CHECK' });
       }
     }
     if (num(f.mv_failed))     findings.push({ k: 'movie failed',        n: num(f.mv_failed),     sev: 'FAIL' });
@@ -940,7 +948,8 @@ http.createServer((req, res) => {
     if (num(r.rung_failed))   findings.push({ k: 'rung failed',         n: num(r.rung_failed),   sev: 'FAIL' });
     if (num(d.not_ok))        findings.push({ k: 'delivery unconfirmed',n: num(d.not_ok),        sev: 'FAIL' });
     if (num(d.wit_bad))       findings.push({ k: 'vimeo not verified',  n: num(d.wit_bad),       sev: 'FAIL' });
-    if (num(d.wit_pending))   findings.push({ k: 'vimeo never answered', n: num(d.wit_pending),   sev: 'CHECK' });
+    if (num(d.wit_pending))   findings.push({ k: runOpen ? 'vimeo still transcoding' : 'vimeo never answered',
+                                              n: num(d.wit_pending), sev: 'CHECK' });
     // ⛔ CHECK, NOT FAIL. Dr. K's ruling 2026-08-21: the film SHIPS and a human
     // looks at it. The encode is not wrong - the master is - and red is for
     // work that did not happen. This finding is now the ONLY road an audio
@@ -975,6 +984,8 @@ http.createServer((req, res) => {
       "old audio probe": "Measured before the audio probe was fixed on 21 Aug. Not a fault, just not trustworthy. Ignore the audio numbers for this run.",
       "upload retried": "An upload needed more than one attempt. It succeeded, but a destination that needs retries is worth watching.",
       "run ended with failures": "The daemon recorded a failure during this run. Every row below may still read clean - a film that fails by a thrown error is never written to the record at all. Compare the job list against the films shown here.",
+      "films not started yet": "This run is still working. These films are QUEUED - they have not been encoded, have not failed, and need no action. The count falls as the run proceeds. Read this row again when the run has finished.",
+      "vimeo still transcoding": "Normal for a run in flight. Vimeo is handed the file and takes minutes to transcode it, so a check made seconds after upload has nothing to answer with. It resolves itself before the run closes.",
       "films in job, not in record": "The job listed more films than the record holds. The missing film failed in a way that left no row - its name is in the daemon own memory, on the run card. It is NOT at the destination and must be re-run."
     };
     for (const x of findings) { x.fix = FIX[x.k] || null; }
