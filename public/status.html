@@ -542,10 +542,17 @@ function buildReport(j,num){
 
   var w=(j.witness||[])[0]||{};
   var wn=n0(w.n),wver=n0(w.verified),wmiss=n0(w.drift_missing);
-  var vv=(vi.bad||wver<wn)?'FAIL':(wn===0?'NA':(wmiss?'CHECK':'PASS'));
+  // ⛔ AN UNANSWERED CONFIRMATION IS NOT A REJECTION. vi.bad means Vimeo
+  // refused or disagreed - a real failure. wver<wn while the run is still
+  // working means only that Vimeo had not finished transcoding when we
+  // asked, ~2s after upload. [MEASURED 2026-08-28, run 48] this row read
+  // FAIL on six films that were all healthy and all confirmed later.
+  var vPend=(wver<wn)&&!vi.bad&&inFlight;
+  var vv=vi.bad?'FAIL':(vPend?'CHECK':((wver<wn)?'FAIL':(wn===0?'NA':(wmiss?'CHECK':'PASS'))));
   h+=repRow('Vimeo',vv,
     wn?(wver+' of '+wn+' confirmed by Vimeo\u2019s own duration'+(wmiss?' \u00b7 <b>'+wmiss+' carry no drift figure</b>':' \u00b7 worst drift '+(w.drift_max==null?'\u2014':w.drift_max+'s'))):'nothing sent to Vimeo',
-    (wver<wn&&wn)?'Vimeo never confirmed a file, or its duration did not match. Open the movie in Vimeo and play it. If it is short or missing, re-run that show.'
+    vPend?'Normal while a run is working. Vimeo takes minutes to transcode what we hand it, so a check made seconds after upload has nothing to answer with. It resolves before the run closes - re-open this report then.'
+    :(wver<wn&&wn)?'Vimeo never confirmed a file, or its duration did not match. Open the movie in Vimeo and play it. If it is short or missing, re-run that show.'
     :(wmiss?'These were verified by code that did not keep the drift number. The verdict stands but the evidence behind it was discarded \u2014 fixed 20 Aug, so runs from then on carry the figure.':''));
 
   // AUDIO
