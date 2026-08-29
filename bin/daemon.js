@@ -937,8 +937,12 @@ http.createServer((req, res) => {
     if (jobN !== null) {
       const recN = num(q1('SELECT COUNT(*) AS c FROM movies WHERE run_id=?', [rid]).c);
       if (jobN > recN) {
+        // INFO on a working run: this is a PROGRESS FIGURE, not a warning.
+        // Dr. K 2026-08-28: the colour answers 'does this need me?', not
+        // 'is this finished?'. On a CLOSED run the same count means a film
+        // really did vanish, and that is amber.
         findings.push({ k: runOpen ? 'films not started yet' : 'films in job, not in record',
-                        n: jobN - recN, sev: 'CHECK' });
+                        n: jobN - recN, sev: runOpen ? 'INFO' : 'CHECK' });
       }
     }
     if (num(f.mv_failed))     findings.push({ k: 'movie failed',        n: num(f.mv_failed),     sev: 'FAIL' });
@@ -949,7 +953,7 @@ http.createServer((req, res) => {
     if (num(d.not_ok))        findings.push({ k: 'delivery unconfirmed',n: num(d.not_ok),        sev: 'FAIL' });
     if (num(d.wit_bad))       findings.push({ k: 'vimeo not verified',  n: num(d.wit_bad),       sev: 'FAIL' });
     if (num(d.wit_pending))   findings.push({ k: runOpen ? 'vimeo still transcoding' : 'vimeo never answered',
-                                              n: num(d.wit_pending), sev: 'CHECK' });
+                                              n: num(d.wit_pending), sev: runOpen ? 'INFO' : 'CHECK' });
     // ⛔ CHECK, NOT FAIL. Dr. K's ruling 2026-08-21: the film SHIPS and a human
     // looks at it. The encode is not wrong - the master is - and red is for
     // work that did not happen. This finding is now the ONLY road an audio
@@ -961,6 +965,10 @@ http.createServer((req, res) => {
     if (num(a.aud_old))       findings.push({ k: 'old audio probe',     n: num(a.aud_old),       sev: 'CHECK' });
     if (num(d.retried))       findings.push({ k: 'upload retried',      n: num(d.retried),       sev: 'CHECK' });
 
+    // ⛔ INFO NEVER SETS THE COLOUR. A finding whose own text says 'these
+    // have not failed and need no action' has no business tinting the
+    // report. It is listed because the count is useful; it is not a
+    // warning. Only CHECK and FAIL colour anything.
     let verdict = 'PASS';
     if (findings.some(x => x.sev === 'CHECK')) verdict = 'CHECK';
     if (findings.some(x => x.sev === 'FAIL'))  verdict = 'FAIL';
