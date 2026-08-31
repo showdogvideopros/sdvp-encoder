@@ -1,0 +1,32 @@
+{
+  "name": "MOVIES-FALL-2026",
+  "description": "Saved from the jobs panel.",
+  "order": 50,
+  "outputs": [
+    {
+      "codec": "h264",
+      "preset": "h264-standard",
+      "rungs": [
+        1080,
+        720,
+        360
+      ],
+      "destinations": [
+        "pcloud"
+      ]
+    },
+    {
+      "codec": "hevc",
+      "preset": "hevc-mezzanine",
+      "rungs": [
+        1080
+      ],
+      "destinations": [
+        "pcloud",
+        "vimeo"
+      ],
+      "vimeo_folder": "/users/63409012/projects/30265459"
+    }
+  ],
+  "saved_at": "2026-08-31T19:54:59.084Z"
+}
