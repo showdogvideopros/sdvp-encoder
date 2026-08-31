@@ -227,9 +227,44 @@ function remaining(r){
   if(!anyDone||!doneB||!leftB)return '';
   var elapsed=(Date.now()-new Date(r.started_at).getTime())/1000;
   if(elapsed<60)return '';
-  var secLeft=elapsed/doneB*leftB;
+  // BLEND THE PRIOR AGAINST THIS RUN'S OWN RATE. [2026-08-31]
+  // elapsed/done*left is pure self-reference: with one film done out of forty
+  // the whole forecast rests on that film, and the next completion moves it
+  // hard. That is the bounce. run.priced_s is the fitted picture-area model's
+  // price for THIS job, computed once in buildRun() before anything started -
+  // masters run 10.32-10.43 Mbps on this material, so bytes give duration and
+  // the shape of a run is knowable at t=0.
+  // Weight by the fraction of BYTES complete: early the model speaks, late the
+  // run's own rate speaks. No priced_s (older runs, hand-built jobs) => this
+  // block is skipped entirely and the figure behaves exactly as it did before.
+  //
+  // ORDER IS DELIBERATE. obs is captured BEFORE any blending so the bounds
+  // blend against the raw observed figure and not against an already-blended
+  // one. Each prior bound is scaled to REMAINING work exactly once, into its
+  // own named variable. An earlier draft inlined both steps, applied (1-bw)
+  // twice, and produced a band NARROWER than the model's real uncertainty -
+  // false precision, which is worse than no range at all.
+  var obs=elapsed/doneB*leftB;
+  var secLeft=obs, loLeft=obs, hiLeft=obs;
+  if(r.priced_s>0){
+    var bw=doneB/(doneB+leftB);
+    if(!isFinite(bw)||bw<0)bw=0;
+    if(bw>1)bw=1;
+    var prMid=r.priced_s*(1-bw);
+    var prLo=(r.priced_low||r.priced_s)*(1-bw);
+    var prHi=(r.priced_high||r.priced_s)*(1-bw);
+    secLeft=(1-bw)*prMid + bw*obs;
+    loLeft =(1-bw)*prLo  + bw*obs;
+    hiLeft =(1-bw)*prHi  + bw*obs;
+  }
   if(!isFinite(secLeft)||secLeft<=0)return '';
-  var w=secLeft<3600?(Math.round(secLeft/60)+' min'):((secLeft/3600).toFixed(1)+' h');
+  // The band collapses to a single figure once it is under 6% wide: late in a
+  // run the model has stopped contributing and a range would be asserting
+  // uncertainty that no longer exists.
+  var fw=function(s){return s<3600?(Math.round(s/60)+' min'):((s/3600).toFixed(1)+' h');};
+  var w=(hiLeft>loLeft && (hiLeft-loLeft)/Math.max(secLeft,1)>0.06)
+        ? (fw(loLeft)+' to '+fw(hiLeft))
+        : fw(secLeft);
   var done=new Date(Date.now()+secLeft*1000);
   return ' \u00b7 ~'+w+' left, done about '+done.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
     ;
