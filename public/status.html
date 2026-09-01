@@ -181,6 +181,13 @@ function remaining(r){
         // 10 films spanning 16-133 min] the H.264 pass is 44% of a film's encode
         // time and HEVC 56%. Treating them as equal made the estimate read ~16%
         // optimistic mid-HEVC, because the harder pass was credited as half done.
+        // ⛔ READ EACH OUTPUT'S OWN PROGRESS, never the film's. As of
+        // 2026-09-01 item.progress.pct is ALREADY this weighted figure -
+        // re-weighting it here would double-count and read optimistic.
+        // Under concurrency BOTH outputs report o.encoding at once, and
+        // the film's single pct could never have described either of them.
+        // ⛔ THE SAME WEIGHTS LIVE IN lib/orchestrator.js (PASS_W).
+        //    If one changes the other MUST. They are not derived from each other.
         var W={h264:0.44, hevc:0.56};
         var tot=0, got=0;
         outs.forEach(function(o){
@@ -188,7 +195,8 @@ function remaining(r){
           tot+=w;
           var rs=o.rungs||[];
           var anyPlanned=rs.some(function(x){return x.state==='PLANNED';});
-          if(o.encoding) got+=w*(pct/100);
+          var opct=(o.progress&&o.progress.pct!=null)?o.progress.pct:pct;
+          if(o.encoding) got+=w*(Math.max(0,Math.min(100,opct))/100);
           else if(rs.length && !anyPlanned) got+=w;
         });
         pct = tot>0 ? (got/tot)*100 : pct;
@@ -299,6 +307,24 @@ function card(it){
           (outs.length > 1 ? '  \u00b7  pass ' + (live+1) + ' of ' + outs.length : '');
   h+='<div style="font-size:16px;color:#3f5b59;margin-top:6px">'+lbl+'</div>';
   h+='<div class="bar"><i style="width:'+(p.pct||0).toFixed(1)+'%"></i></div>';
+  // PER-OUTPUT BARS. One ffmpeg per codec; under concurrency they run at
+  // once and at different speeds, so a single film bar describes neither.
+  // Shown whenever a film has more than one output - in sequential mode the
+  // finished pass simply reads 100 and the live one moves.
+  if((it.outputs||[]).length>1 && (it.phase==='ENCODING'||it.phase==='VERIFYING')){
+    it.outputs.forEach(function(o){
+      var rs=o.rungs||[];
+      var anyPlanned=rs.some(function(x){return x.state==='PLANNED';});
+      var opct=(o.progress&&o.progress.pct!=null)?Math.max(0,Math.min(100,o.progress.pct))
+               :((rs.length && !anyPlanned)?100:0);
+      var note=o.encoding?'encoding':((rs.length && !anyPlanned)?'done':'queued');
+      h+='<div style="display:flex;align-items:center;gap:10px;margin:4px 0">'
+        +'<span style="width:56px;font-size:14px;color:#3f5b59">'+esc(o.codec)+'</span>'
+        +'<div class="bar" style="flex:1;height:14px;margin:0"><i style="width:'+opct.toFixed(1)+'%"></i></div>'
+        +'<span style="width:96px;text-align:right;font-size:14px;color:#3f5b59">'
+        +opct.toFixed(0)+'% '+esc(note)+'</span></div>';
+    });
+  }
   h+='<div class="stats"><span>'+(p.pct||0).toFixed(0)+' percent</span><span>speed '+(p.speed_x||0).toFixed(2)+'x</span><span>eta '+fmt(p.eta_s)+'</span>';
   if(it.timings){var t=it.timings;h+='<span>fetch '+fmt(t.fetch_s)+'</span><span>encode '+fmt(t.encode_s)+'</span><span>verify '+fmt(t.verify_s)+'</span><span>upload '+fmt(t.upload_s)+'</span>';}
   h+='</div>';
