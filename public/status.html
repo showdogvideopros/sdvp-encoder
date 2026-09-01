@@ -299,12 +299,13 @@ function card(it){
   // three H.264 rungs share one decode, then HEVC runs again from scratch. The
   // bar therefore fills, resets to zero and fills again, and without this the
   // reader has no way to tell which pass they are watching.
+  // ⛔ NO PASS COUNTER. 'pass N of M' was written when the passes ran one
+  // after another; under concurrency BOTH outputs report encoding at once and
+  // the counter always read the last one - 'hevc, pass 2 of 2' while H.264 was
+  // still working. Dr. K's ruling 2026-09-01: the label names the PHASE, in
+  // contrast to verifying / quality probe / uploading. WHICH codec and HOW FAR
+  // is the job of the per-output bars directly below.
   var lbl = esc(p.label||'');
-  var outs = it.outputs||[], live = -1;
-  for (var oi=0; oi<outs.length; oi++) if (outs[oi].encoding) live = oi;
-  if (live >= 0 && lbl === 'encoding')
-    lbl = 'encoding ' + esc(outs[live].codec) +
-          (outs.length > 1 ? '  \u00b7  pass ' + (live+1) + ' of ' + outs.length : '');
   h+='<div style="font-size:16px;color:#3f5b59;margin-top:6px">'+lbl+'</div>';
   h+='<div class="bar"><i style="width:'+(p.pct||0).toFixed(1)+'%"></i></div>';
   // PER-OUTPUT BARS. One ffmpeg per codec; under concurrency they run at
