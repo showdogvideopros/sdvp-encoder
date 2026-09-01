@@ -451,11 +451,11 @@ function repBtn(r){
   if(r.run_number==null)return'';
   var v=VERDICTS?VERDICTS[r.run_number]:null;
   if(!v)return '<button class="rbtn" style="background:#e2e8e7;color:#46605e;border-color:#d8e2e0" '
-    +'onclick="showReport('+r.run_number+')">RUN REPORT</button>';
+    +'onclick="event.stopPropagation();showReport('+r.run_number+')">RUN REPORT</button>';
   var cls=v.verdict==='FAIL'?'fail':(v.verdict==='CHECK'?'warn':'pass');
   var n=(v.findings||[]).length;
   var lab='RUN REPORT'+(n?' \u00b7 '+n:'');
-  return '<button class="rbtn '+cls+'" onclick="showReport('+r.run_number+')">'+lab+'</button>';
+  return '<button class="rbtn '+cls+'" onclick="event.stopPropagation();showReport('+r.run_number+')">'+lab+'</button>';
 }
 function n0(v){return v==null?0:Number(v);}
 function vchip(v){return '<span class="vd '+v+'">'+v+'</span>';}
@@ -586,7 +586,7 @@ function buildReport(j,num){
   // asked, ~2s after upload. [MEASURED 2026-08-28, run 48] this row read
   // FAIL on six films that were all healthy and all confirmed later.
   var vPend=(wver<wn)&&!vi.bad&&inFlight;
-  var vv=vi.bad?'FAIL':(vPend?'CHECK':((wver<wn)?'FAIL':(wn===0?'NA':(wmiss?'CHECK':'PASS'))));
+  var vv=vi.bad?'FAIL':(vPend?'PASS':((wver<wn)?'FAIL':(wn===0?'NA':(wmiss?'CHECK':'PASS'))));
   h+=repRow('Vimeo',vv,
     wn?(wver+' of '+wn+' confirmed by Vimeo\u2019s own duration'+(wmiss?' \u00b7 <b>'+wmiss+' carry no drift figure</b>':' \u00b7 worst drift '+(w.drift_max==null?'\u2014':w.drift_max+'s'))):'nothing sent to Vimeo',
     vPend?'Normal while a run is working. Vimeo takes minutes to transcode what we hand it, so a check made seconds after upload has nothing to answer with. It resolves before the run closes - re-open this report then.'
@@ -803,7 +803,7 @@ function drawRuns(runs){
   shown.forEach(function(r){
     var b=runHeadBits(r);
     h+='<div class="runline'+(b.failed?' bad':'')+'" onclick="openRun(\''+esc(r.run_id)+'\')">'
-      +'<b>'+esc(b.rn.replace(/ \u00b7 $/,''))+'</b> &middot; '+esc(r.job_label||'')
+      +'<b>'+esc(b.rn.replace(/ \u00b7 $/,''))+'</b> &middot; '+esc(r.job_label||'')+repBtn(r)
       +'<div class="muted" style="font-size:15px;margin-top:3px">'
       +esc(r.status)+b.tally+' \u00b7 '+esc(b.time)+'</div></div>';
   });

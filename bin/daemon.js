@@ -880,7 +880,8 @@ http.createServer((req, res) => {
       '         THEN 1 ELSE 0 END) AS wit_bad, ' +
       "SUM(CASE WHEN d.destination='vimeo' AND d.witness_state='PENDING' " +
       '         THEN 1 ELSE 0 END) AS wit_pending, ' +
-      "SUM(CASE WHEN d.destination='vimeo' AND d.witness_drift_s IS NULL " +
+      "SUM(CASE WHEN d.destination='vimeo' AND d.witness_state='VERIFIED' " +
+      "         AND d.witness_drift_s IS NULL " +
       '         THEN 1 ELSE 0 END) AS wit_nodrift ' +
       'FROM deliveries d JOIN rungs r ON r.rung_id=d.rung_id ' +
       'JOIN movies m ON m.item_id=r.item_id WHERE m.run_id=?', [rid]);
@@ -1064,7 +1065,8 @@ http.createServer((req, res) => {
         witness: R.query(
           'SELECT COUNT(*) AS n, ' +
           "SUM(CASE WHEN d.witness_state='VERIFIED' THEN 1 ELSE 0 END) AS verified, " +
-          'SUM(CASE WHEN d.witness_drift_s IS NULL THEN 1 ELSE 0 END) AS drift_missing, ' +
+          "SUM(CASE WHEN d.witness_state='VERIFIED' " +
+          '         AND d.witness_drift_s IS NULL THEN 1 ELSE 0 END) AS drift_missing, ' +
           'MAX(d.witness_drift_s) AS drift_max FROM deliveries d ' +
           'JOIN rungs r ON r.rung_id=d.rung_id JOIN movies m ON m.item_id=r.item_id ' +
           "WHERE m.run_id=? AND d.destination='vimeo'", [rid]),
