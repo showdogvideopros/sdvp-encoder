@@ -9,6 +9,37 @@ const PORT = Number(process.env.ENCODER_PORT || 8099);
 const JOBS = path.join(st.ROOT, 'jobs');
 const PAGE = '/root/build/public/status.html';
 
+const SCHED_PAGE = '/root/build/public/scheduler.html';
+
+// ---- PAGE DECORATION ----------------------------------------------------
+// Both pages are plain files off disk. Two things are injected on the way
+// out rather than baked into the files.
+//
+// HOSTNAME into the title, so a tab says which BOX it is. The page cannot
+// know this itself - it only sees the URL, which is a tailnet address.
+// Server-side injection is right from any address and on any box: a future
+// enc3 will say enc3 with no edit.
+//
+// FAVICON, when the page lacks one. status.html carried it inline and
+// scheduler.html did not, so the jobs tab was anonymous. Doing it here
+// means a third page added later inherits both without anyone remembering.
+//
+// MEASURED 2026-09-02: both files are read per request with no cache, so a
+// later edit to the HTML needs no restart.
+const HOSTNAME = require('os').hostname();
+const FAVICON = "<link rel=\"icon\" href=\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzIiIGZpbGw9IiNGRkM2MUEiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMGE0ZjUyIiBzdHJva2Utd2lkdGg9IjciLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjEzIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjUxIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSIxMyIgY3k9IjMyIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSI1MSIgY3k9IjMyIiByPSI1LjUiIGZpbGw9IiMwYTRmNTIiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSI2LjUiIGZpbGw9IiMwYTRmNTIiLz48L3N2Zz4=\">";
+
+function servePage(file) {
+  var html = fs.readFileSync(file, 'utf8');
+  html = html.replace(/<title>([^<]*)<\/title>/i, function (m0, t) {
+    return '<title>' + HOSTNAME + ' \u00b7 ' + t + '</title>';
+  });
+  if (html.indexOf('rel="icon"') === -1) {
+    html = html.replace(/<\/title>/i, '</title>' + FAVICON);
+  }
+  return html;
+}
+
 st.ensureDirs();
 const state = st.load();
 state.daemon = { pid: process.pid, started_at: new Date().toISOString(), current_item: null };
@@ -1167,10 +1198,10 @@ http.createServer((req, res) => {
   // framework, no build step. Two pages, two branches.
   if (req.url === '/jobs' || req.url.indexOf('/jobs?') === 0) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(fs.readFileSync('/root/build/public/scheduler.html'));
+    return res.end(servePage(SCHED_PAGE));
   }
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(fs.readFileSync(PAGE));
+  res.end(servePage(PAGE));
 }).listen(PORT, '0.0.0.0', () => {
   console.log('sdvp-encoder status on port ' + PORT);
 });
