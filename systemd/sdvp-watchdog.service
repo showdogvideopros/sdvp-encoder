@@ -1,0 +1,11 @@
+[Unit]
+Description=SDVP encoder email watchdog (one check)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/build
+EnvironmentFile=/root/config/watchdog.env
+ExecStart=/usr/bin/node /root/build/tools/watchdog.js
+TimeoutStartSec=90
