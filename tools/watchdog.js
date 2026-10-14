@@ -17,6 +17,9 @@
 //                  (a plain crash restarts in 5 s and never reaches this)
 //   RUNNING AGAIN  it came back
 //   FAILED         a film failed (named, with its error)
+//   FILM DONE      a film finished its whole ladder (on by default; set
+//                  WATCHDOG_FILM_EMAILS=off for failures + summaries only).
+//                  More than 3 in one check are combined into one email.
 //   RUN FINISHED   a run ended: summary, with any failures
 //   NOT STARTING   a job file has waited QUEUE_MIN (10) minutes with no run starting
 //   STILL ALIVE    once each morning (America/Denver) while there is work
@@ -29,6 +32,8 @@
 //   node tools/watchdog.js --dry     print what would be sent; send nothing, save nothing
 //   node tools/watchdog.js --test    send one test email now
 //   node tools/watchdog.js --seed    mark all current history as seen; send nothing
+//   node tools/watchdog.js --preview-film   print the FILM DONE email for the newest
+//                                    finished film in state.json; send nothing, save nothing
 // Test overrides: WATCHDOG_STATE_FILE, WATCHDOG_DB, WATCHDOG_JOBS_DIR, WATCHDOG_UNIT,
 // WATCHDOG_STALL_MIN, WATCHDOG_REPEAT_MIN, WATCHDOG_DOWN_MIN, WATCHDOG_QUEUE_MIN,
 // WATCHDOG_HEARTBEAT_HOUR, WATCHDOG_TO, WATCHDOG_FROM,
@@ -50,6 +55,8 @@ const REPEAT_MIN = num(E.WATCHDOG_REPEAT_MIN, 120);
 const DOWN_MIN   = num(E.WATCHDOG_DOWN_MIN, 3);
 const QUEUE_MIN  = num(E.WATCHDOG_QUEUE_MIN, 10);
 const HB_HOUR    = num(E.WATCHDOG_HEARTBEAT_HOUR, 7);
+const FILM_EMAILS = String(E.WATCHDOG_FILM_EMAILS || 'on').toLowerCase() !== 'off';
+const FILM_BURST  = 3;                       // more than this many in one check -> one combined email
 const HB_WINDOW_H = 4;                       // heartbeat may go out HB_HOUR..HB_HOUR+3
 const TZ    = 'America/Denver';
 const FROM  = E.WATCHDOG_FROM || 'support@showdogvideopros.com';
@@ -58,7 +65,8 @@ const PANEL = E.WATCHDOG_PANEL || 'http://100.99.131.37:8099';
 const HOST  = os.hostname().split('.')[0];
 
 const args = new Set(process.argv.slice(2));
-const DRY = args.has('--dry'), TEST = args.has('--test'), SEED = args.has('--seed');
+const DRY = args.has('--dry') || args.has('--preview-film'), TEST = args.has('--test'), SEED = args.has('--seed');
+const PREVIEW = args.has('--preview-film');
 
 const NOW = Date.now();
 const MIN = 60000;
@@ -180,18 +188,60 @@ function statusLines() {
   return L;
 }
 
+// What one finished film delivered, from its own record in state.json.
+const rungHeight = (r) => (r && typeof r === 'object')
+  ? (r.height || r.target_height || r.rung || r.h || '?') : (r === undefined ? '?' : r);
+function filmDoneLines(run, it) {
+  const pos = (run.items || []).indexOf(it) + 1, total = (run.items || []).length;
+  const t = it.timings || {};
+  const secs = ['fetch_s', 'encode_s', 'verify_s', 'upload_s'].reduce((a, k) => a + (Number(t[k]) || 0), 0);
+  const L = ['Film: ' + (it.name || it.item_id),
+             'Job: ' + (run.job_label || '(no label)') + ' · run ' + run.run_number + ' · film ' + pos + ' of ' + total];
+  if (secs > 0) {
+    L.push('Took: ' + fmtDur(secs * 1000) + '  (download ' + Math.round(t.fetch_s || 0) + ' s · encode ' +
+           Math.round(t.encode_s || 0) + ' s · verify ' + Math.round(t.verify_s || 0) + ' s · upload ' +
+           Math.round(t.upload_s || 0) + ' s)');
+  }
+  const outs = Array.isArray(it.outputs) ? it.outputs : [];
+  if (outs.length) {
+    L.push('Delivered:');
+    for (const o of outs) {
+      const hs = (Array.isArray(o.rungs) ? o.rungs : []).map(rungHeight).join('/');
+      L.push('  • ' + String(o.codec || '?').toUpperCase() + ' ' + (hs || '?') + 'p → ' +
+             (Array.isArray(o.destinations) ? o.destinations.join(' + ') : '?') +
+             (o.skipped_count ? '  (' + o.skipped_count + ' already there, skipped)' : ''));
+    }
+  }
+  for (const v of (Array.isArray(it.vimeo) ? it.vimeo : [])) {
+    const w = v.witness || {};
+    L.push('Vimeo ' + (v.height || '') + 'p: ' + (w.state || 'no check recorded') +
+           (w.drift_s !== undefined ? ' (length off by ' + w.drift_s + ' s)' : ''));
+  }
+  const c = counts(run);
+  L.push('', 'This run so far: ' + c.DONE + ' done · ' + c.FAILED + ' failed · ' + c.left + ' to go');
+  return L;
+}
+
 // ---------- the watchdog's own memory ----------
-const fresh = { armed_at: new Date(NOW).toISOString(), seen_failed: {}, seen_runs: {},
+const fresh = { armed_at: new Date(NOW).toISOString(), seen_failed: {}, seen_runs: {}, seen_done: {},
                 stall: null, down: null, queued_alerted: {}, heartbeat_date: null };
 const prior = readJSON(DB_FILE);
 const db = Object.assign({}, fresh, prior || {});
-for (const k of ['seen_failed', 'seen_runs', 'queued_alerted']) db[k] = db[k] || {};
+// [2026-10-14] seen_done is new. A memory file written before it existed must
+// have every already-finished film marked seen BEFORE anything is evaluated,
+// or the first check after the upgrade would email every film in the history.
+const needsDoneSeed = !!prior && !prior.seen_done;
+for (const k of ['seen_failed', 'seen_runs', 'seen_done', 'queued_alerted']) db[k] = db[k] || {};
 
 function seedAll() {
   for (const r of runs) {
     if (r.finished_at) db.seen_runs[r.run_number] = 1;
     for (const it of (r.items || [])) if (it.phase === 'FAILED') db.seen_failed[r.run_number + ':' + it.item_id] = 1;
+    seedDone(r);
   }
+}
+function seedDone(r) {
+  for (const it of (r.items || [])) if (it.phase === 'DONE') db.seen_done[r.run_number + ':' + it.item_id] = 1;
 }
 function save() {
   if (DRY) return;
@@ -199,6 +249,7 @@ function save() {
   const keep = new Set(runs.map(r => String(r.run_number)));
   for (const k of Object.keys(db.seen_runs)) if (!keep.has(String(k))) delete db.seen_runs[k];
   for (const k of Object.keys(db.seen_failed)) if (!keep.has(k.split(':')[0])) delete db.seen_failed[k];
+  for (const k of Object.keys(db.seen_done)) if (!keep.has(k.split(':')[0])) delete db.seen_done[k];
   writeAtomic(DB_FILE, db);
 }
 
@@ -211,12 +262,24 @@ function save() {
     process.exit(ok ? 0 : 1);
   }
 
+  if (PREVIEW) {
+    let pick = null;
+    for (const r of runs) {
+      for (const it of (r.items || [])) if (it.phase === 'DONE') { pick = { r, it }; break; }
+      if (pick) break;
+    }
+    if (!pick) { console.log('preview: no finished film in state'); return; }
+    await send('FILM DONE (preview): ' + (pick.it.name || pick.it.item_id), filmDoneLines(pick.r, pick.it));
+    return;
+  }
+
   if (SEED || !prior) {
     seedAll();
     if (SEED) {
       save();
-      console.log('watchdog: seeded - ' + Object.keys(db.seen_runs).length + ' finished run(s) and ' +
-                  Object.keys(db.seen_failed).length + ' failed film(s) marked as already seen');
+      console.log('watchdog: seeded - ' + Object.keys(db.seen_runs).length + ' finished run(s), ' +
+                  Object.keys(db.seen_failed).length + ' failed film(s) and ' +
+                  Object.keys(db.seen_done).length + ' finished film(s) marked as already seen');
       return;
     }
     // first real run: arm quietly, say so once
@@ -225,6 +288,33 @@ function save() {
       '', ...statusLines()]);
     save();
     return;
+  }
+
+  if (needsDoneSeed) {
+    for (const r of runs) seedDone(r);
+    console.log('watchdog: upgrade - ' + Object.keys(db.seen_done).length + ' already-finished film(s) marked seen');
+  }
+
+  // 0. FILM DONE - each film that finished its ladder since the last check
+  if (FILM_EMAILS) {
+    const newDone = [];
+    for (const r of runs) for (const it of (r.items || [])) {
+      if (it.phase === 'DONE' && !db.seen_done[r.run_number + ':' + it.item_id]) newDone.push({ r, it });
+    }
+    const mark = (x) => { db.seen_done[x.r.run_number + ':' + x.it.item_id] = 1; };
+    if (newDone.length > FILM_BURST) {
+      const L = newDone.map(x => '• ' + (x.it.name || x.it.item_id) + '  (' + (x.r.job_label || 'run ' + x.r.run_number) + ')');
+      L.push('', 'Several finished between checks, so they are combined into one email.', '', ...statusLines());
+      if (await send(newDone.length + ' FILMS DONE', L)) newDone.forEach(mark);
+    } else {
+      for (const x of newDone) {
+        const pos = (x.r.items || []).indexOf(x.it) + 1, total = (x.r.items || []).length;
+        if (await send('FILM DONE (' + pos + ' of ' + total + '): ' + (x.it.name || x.it.item_id),
+                       filmDoneLines(x.r, x.it))) mark(x);
+      }
+    }
+  } else {
+    for (const r of runs) seedDone(r);   // stay current, so switching back on does not flood
   }
 
   // 1. RUN FINISHED (carries its own new failures, so they do not email twice)

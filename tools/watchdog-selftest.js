@@ -5,7 +5,11 @@
 // Runs the REAL tools/watchdog.js as a child process, against synthetic state files
 // in a temp folder, with emails captured to a file (WATCHDOG_SINK) instead of sent.
 // It never touches the live state.json, the live watchdog.json, or the encoder.
-// What it does NOT prove: that SendGrid delivers (that is `watchdog.js --test`).
+// What it does NOT prove: that SendGrid delivers (that is `watchdog.js --test`),
+// or that the FILM DONE body reads correctly on a REAL film record (that is
+// `watchdog.js --preview-film` against the live state.json).
+// Scenarios A-I run with per-film emails OFF (their expectations predate it);
+// J-K turn them ON.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -40,7 +44,7 @@ function run(env, args) {
     env: Object.assign({}, process.env, {
       WATCHDOG_STATE_FILE: STATE, WATCHDOG_DB: DB, WATCHDOG_JOBS_DIR: JOBS, WATCHDOG_SINK: SINK,
       WATCHDOG_FAKE_ACTIVE: 'active', WATCHDOG_FAKE_ENABLED: 'enabled',
-      WATCHDOG_HEARTBEAT_HOUR: '99', SENDGRID_API_KEY: ''
+      WATCHDOG_HEARTBEAT_HOUR: '99', SENDGRID_API_KEY: '', WATCHDOG_FILM_EMAILS: 'off'
     }, env || {})
   });
   if (r.status !== 0) console.log('    (watchdog exit ' + r.status + ') ' + (r.stderr || '').trim());
@@ -105,6 +109,42 @@ const hourNow = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Den
 writeState([active([['ENCODING'], ['QUEUED']]), done, history], 0);
 expect('I morning, work present: STILL ALIVE', run({ WATCHDOG_HEARTBEAT_HOUR: String(hourNow) }), /^Still alive/);
 expect('I2 only once a day', run({ WATCHDOG_HEARTBEAT_HOUR: String(hourNow) }), null);
+
+// J. UPGRADE: a memory file from before per-film emails existed (no seen_done)
+// must NOT email every film already finished. Known-positive for the flood risk:
+// 12 finished films sit in state.
+const ON = { WATCHDOG_FILM_EMAILS: 'on' };
+const bigOld = { run_id: 'r1020', run_number: 1020, job_label: 'BIG OLD JOB', status: 'COMPLETE',
+  started_at: iso(40 * 24 * 60 * MIN), finished_at: iso(39 * 24 * 60 * MIN),
+  items: Array.from({ length: 12 }, (_, i) => item(200 + i, 'OLD DONE ' + (i + 1), 'DONE')) };
+writeState([done, bigOld, history], 0);
+run({}, ['--seed']);                                   // seed as the OLD version would have
+const legacy = JSON.parse(fs.readFileSync(DB));
+delete legacy.seen_done; fs.writeFileSync(DB, JSON.stringify(legacy));
+const doneInState = [done, bigOld, history].reduce((a, r) => a + r.items.filter(i => i.phase === 'DONE').length, 0);
+expect('J upgrade with ' + doneInState + ' finished films in history: no flood', run(ON), null);
+const sd = Object.keys(JSON.parse(fs.readFileSync(DB)).seen_done || {}).length;
+expect('J2 memory marks all ' + doneInState + ' as seen', sd === doneInState ? [] : ['seen_done holds ' + sd], null);
+
+// K. per-film emails
+const k = active([['DONE', { timings: { fetch_s: 3, encode_s: 139, verify_s: 25, upload_s: 38 },
+  outputs: [{ codec: 'h264', rungs: [{ height: 1080 }, { height: 720 }, { height: 360 }], destinations: ['pcloud'] }],
+  vimeo: [{ height: 1080, witness: { state: 'VERIFIED', drift_s: 0.36 } }] }], ['ENCODING'], ['QUEUED']]);
+k.run_number = 1030; k.items.forEach((it, i) => { it.item_id = 300 + i; });
+writeState([k, done, bigOld, history], 0);
+expect('K a film finishes: FILM DONE (1 of 3)', run(ON), /^FILM DONE \(1 of 3\): TEST FILM 1$/);
+expect('K2 not repeated', run(ON), null);
+k.items[1].phase = 'DONE';
+writeState([k, done, bigOld, history], 0);
+expect('K3 switched off: no email for the next film', run({ WATCHDOG_FILM_EMAILS: 'off' }), null);
+expect('K4 switched back on: no backlog email', run(ON), null);
+const burst = active(Array.from({ length: 6 }, () => ['QUEUED']));
+burst.run_number = 1031; burst.items.forEach((it, i) => { it.item_id = 400 + i; });
+writeState([burst, k, done, bigOld, history], 0);
+run(ON);
+burst.items.forEach((it, i) => { if (i < 5) it.phase = 'DONE'; });
+writeState([burst, k, done, bigOld, history], 0);
+expect('K5 five finish between checks: one combined email', run(ON), /^5 FILMS DONE$/);
 
 fs.rmSync(T, { recursive: true, force: true });
 const pass = results.every(Boolean);
